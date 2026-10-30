@@ -1,0 +1,1216 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ISO Audit & Document Control System | Sunlogis</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+    <style>
+        body {
+            font-family: 'Sarabun', sans-serif;
+            background-color: #f1f5f9;
+            color: #0f172a;
+        }
+        .nav-active {
+            background: linear-gradient(90deg, #1e40af 0%, #2563eb 100%);
+            color: #ffffff !important;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+        }
+        .modal-backdrop {
+            background-color: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(3px);
+        }
+        @media print {
+            .no-print { display: none !important; }
+            .print-only { display: block !important; }
+            body { background: #fff; }
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+    <!-- Top Header Bar -->
+    <header class="bg-slate-900 text-white shadow-lg sticky top-0 z-30 no-print">
+        <div class="max-w-[1600px] mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-lg font-bold shadow">
+                    <i class="fa-solid fa-shield-halved"></i>
+                </div>
+                <div>
+                    <div class="flex items-center gap-2">
+                        <h1 class="text-lg font-bold tracking-wide">SUNLOGIS ISO AUDIT & DOCUMENT CONTROL</h1>
+                        <span class="text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-medium">
+                            ISO 9001 / Synology Connected
+                        </span>
+                    </div>
+                    <p class="text-xs text-slate-400">ระบบจัดการเอกสาร Master File, ประวัติฝึกอบรมพนักงาน และแผนซ่อมบำรุง MHE & Rack (Synology QuickConnect: Sunlogis / Folder: ISO)</p>
+                </div>
+            </div>
+
+            <!-- Right Controls: Synology Quick Status + Active User / Role Switcher -->
+            <div class="flex items-center gap-3 flex-wrap">
+                <div id="synoHeaderBadge" onclick="switchTab('synology')" class="cursor-pointer flex items-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-1.5 rounded-lg text-xs transition">
+                    <span id="synoDot" class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span>Synology: <strong class="text-blue-300">Sunlogis (/DATA/ISO)</strong></span>
+                </div>
+
+                <!-- Quick User/Role Switcher to test Document Access Control (#1) -->
+                <div class="flex items-center gap-2 bg-slate-800 border border-slate-700 px-3 py-1.5 rounded-lg text-xs">
+                    <i class="fa-solid fa-user-lock text-amber-400"></i>
+                    <span class="text-slate-400">ผู้ใช้งานปัจจุบัน:</span>
+                    <select id="userSwitcher" onchange="handleQuickUserSwitch(this.value)" class="bg-slate-900 text-white font-semibold px-2 py-1 rounded border border-slate-600 focus:outline-none">
+                        <option value="admin">admin (Admin - Management)</option>
+                        <option value="dcc">dcc (DCC - QMR/ISO)</option>
+                        <option value="hr">hr (HR - แผนกบุคคล)</option>
+                        <option value="maint">maint (Maintenance - Warehouse)</option>
+                        <option value="viewer">viewer (Viewer - พนักงานทั่วไป)</option>
+                    </select>
+                    <button onclick="openLoginModal()" class="text-blue-400 hover:text-blue-300 ml-1 underline" title="เข้าสู่ระบบด้วยรหัสผ่าน">
+                        สลับบัญชี
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Layout -->
+    <div class="flex-1 max-w-[1600px] w-full mx-auto flex flex-col lg:flex-row gap-5 p-4 md:p-6">
+
+        <!-- Left Sidebar Navigation -->
+        <aside class="w-full lg:w-64 shrink-0 no-print">
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-3 sticky top-20 space-y-1.5">
+                <div class="px-3 py-2 text-xs font-bold uppercase tracking-wider text-slate-400">เมนูหลัก (Modules)</div>
+
+                <button onclick="switchTab('dashboard')" id="tabBtn-dashboard" class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 transition nav-active">
+                    <i class="fa-solid fa-chart-pie w-5 text-center"></i>
+                    <span>แดชบอร์ดภาพรวม</span>
+                </button>
+
+                <button onclick="switchTab('documents')" id="tabBtn-documents" class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 transition">
+                    <i class="fa-solid fa-file-shield w-5 text-center"></i>
+                    <div class="text-left">
+                        <div>Master File เอกสาร ISO</div>
+                        <div class="text-[11px] font-normal opacity-75">สิทธิ์เข้าถึง & Upload ตามรหัส</div>
+                    </div>
+                </button>
+
+                <button onclick="switchTab('employees')" id="tabBtn-employees" class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 transition">
+                    <i class="fa-solid fa-user-graduate w-5 text-center"></i>
+                    <div class="text-left">
+                        <div>ประวัติพนักงาน & ฝึกอบรม</div>
+                        <div class="text-[11px] font-normal opacity-75">ใบสมัครงาน, แผน & หลักฐาน</div>
+                    </div>
+                </button>
+
+                <button onclick="switchTab('equipment')" id="tabBtn-equipment" class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 transition">
+                    <i class="fa-solid fa-boxes-stacked w-5 text-center"></i>
+                    <div class="text-left">
+                        <div>อุปกรณ์ MHE, Rack & PM</div>
+                        <div class="text-[11px] font-normal opacity-75">ทะเบียน, แจ้งเมล 30 วัน & PM</div>
+                    </div>
+                </button>
+
+                <button onclick="switchTab('synology')" id="tabBtn-synology" class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 transition">
+                    <i class="fa-solid fa-server w-5 text-center"></i>
+                    <div class="text-left">
+                        <div>Synology Drive (ISO)</div>
+                        <div class="text-[11px] font-normal opacity-75">QuickConnect: Sunlogis</div>
+                    </div>
+                </button>
+
+                <button onclick="switchTab('settings')" id="tabBtn-settings" class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 transition">
+                    <i class="fa-solid fa-sliders w-5 text-center"></i>
+                    <div class="text-left">
+                        <div>ตั้งค่า SMTP & ผู้ใช้งาน</div>
+                        <div class="text-[11px] font-normal opacity-75">กำหนดสิทธิ์ & อีเมลแจ้งเตือน</div>
+                    </div>
+                </button>
+
+                <!-- Current Logged-in Role Card -->
+                <div class="mt-6 pt-4 border-t border-slate-100 px-3 py-2 bg-slate-50 rounded-xl">
+                    <div class="text-xs text-slate-500">สิทธิ์การใช้งานขณะนี้:</div>
+                    <div id="sidebarUserName" class="text-sm font-bold text-slate-800 mt-0.5">Watcharagorn (Admin)</div>
+                    <div class="flex items-center gap-1.5 mt-1">
+                        <span id="sidebarUserRole" class="text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-800 font-semibold">Admin</span>
+                        <span id="sidebarUserDept" class="text-xs px-2 py-0.5 rounded bg-slate-200 text-slate-700">Management</span>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="flex-1 min-w-0 space-y-6">
+
+            <!-- Toast Notification Banner -->
+            <div id="toastBanner" class="hidden fixed bottom-5 right-5 z-50 max-w-md bg-slate-900 text-white px-4 py-3 rounded-xl shadow-2xl border border-slate-700 flex items-center gap-3">
+                <i id="toastIcon" class="fa-solid fa-circle-check text-emerald-400 text-lg"></i>
+                <div id="toastText" class="text-sm font-medium"></div>
+            </div>
+
+            <!-- ========================================== -->
+            <!-- TAB 1: DASHBOARD                           -->
+            <!-- ========================================== -->
+            <section id="tab-dashboard" class="space-y-6">
+                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+                    <div onclick="switchTab('documents')" class="cursor-pointer bg-white p-5 rounded-2xl shadow-sm border border-slate-200 hover:border-blue-400 transition">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-xs font-semibold text-slate-500 uppercase">Master File เอกสาร ISO</p>
+                                <h3 id="kpiTotalDocs" class="text-3xl font-bold text-slate-900 mt-1">0</h3>
+                                <p id="kpiSyncedDocs" class="text-xs text-emerald-600 mt-1 font-medium">ซิงค์ขึ้น Synology แล้ว 0 ฉบับ</p>
+                            </div>
+                            <div class="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center text-xl">
+                                <i class="fa-solid fa-file-contract"></i>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div onclick="switchTab('employees')" class="cursor-pointer bg-white p-5 rounded-2xl shadow-sm border border-slate-200 hover:border-indigo-400 transition">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-xs font-semibold text-slate-500 uppercase">ประวัติพนักงาน (HR)</p>
+                                <h3 id="kpiTotalEmps" class="text-3xl font-bold text-slate-900 mt-1">0</h3>
+                                <p id="kpiTrainings" class="text-xs text-indigo-600 mt-1 font-medium">ประวัติและแผนฝึกอบรม 0 รายการ</p>
+                            </div>
+                            <div class="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-xl">
+                                <i class="fa-solid fa-users-gear"></i>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div onclick="switchTab('equipment')" class="cursor-pointer bg-white p-5 rounded-2xl shadow-sm border border-slate-200 hover:border-amber-400 transition">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-xs font-semibold text-slate-500 uppercase">ทะเบียน MHE, Rack & อุปกรณ์</p>
+                                <h3 id="kpiTotalEquip" class="text-3xl font-bold text-slate-900 mt-1">0</h3>
+                                <p class="text-xs text-slate-500 mt-1">พร้อมแผนตรวจเช็ค PM ประจำรอบ</p>
+                            </div>
+                            <div class="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center text-xl">
+                                <i class="fa-solid fa-truck-ramp-box"></i>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div onclick="switchTab('equipment')" class="cursor-pointer bg-white p-5 rounded-2xl shadow-sm border border-rose-200 hover:border-rose-400 transition">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-xs font-semibold text-rose-600 uppercase">แจ้งเตือน PM ล่วงหน้า 30 วัน</p>
+                                <h3 id="kpiUpcomingPm" class="text-3xl font-bold text-rose-600 mt-1">0</h3>
+                                <p class="text-xs text-rose-500 mt-1 font-medium">รายการที่ต้องแจ้งเตือน/ดำเนินการ</p>
+                            </div>
+                            <div class="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center text-xl">
+                                <i class="fa-solid fa-bell"></i>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Upcoming 30-Day PM Alert Box & Synology Info -->
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div class="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+                        <div class="flex flex-wrap items-center justify-between gap-2 pb-4 border-b border-slate-100">
+                            <div>
+                                <h3 class="text-base font-bold text-slate-800 flex items-center gap-2">
+                                    <i class="fa-solid fa-envelope-circle-check text-rose-600"></i>
+                                    แผนซ่อมบำรุงรักษา (PM) ที่ถึงกำหนดแจ้งเตือนล่วงหน้า 30 วัน
+                                </h3>
+                                <p class="text-xs text-slate-500">ระบบตรวจสอบและส่งอีเมลแจ้งผู้เกี่ยวข้องอัตโนมัติ 30 วันล่วงหน้าก่อนถึงวันที่ตามแผน</p>
+                            </div>
+                            <button onclick="triggerPmAlertsNow(true)" class="bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold px-3.5 py-2 rounded-xl flex items-center gap-1.5 shadow-sm transition">
+                                <i class="fa-solid fa-paper-plane"></i> ส่งเมลแจ้งเตือนล่วงหน้า 30 วันทันที
+                            </button>
+                        </div>
+                        <div id="dashboardPmList" class="divide-y divide-slate-100 mt-2"></div>
+                    </div>
+
+                    <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 flex flex-col justify-between">
+                        <div>
+                            <h3 class="text-base font-bold text-slate-800 flex items-center gap-2">
+                                <i class="fa-solid fa-cloud-arrow-up text-blue-600"></i>
+                                สถานะ Synology Drive Storage
+                            </h3>
+                            <p class="text-xs text-slate-500 mt-1">การเชื่อมต่อจัดเก็บเอกสารอัตโนมัติ</p>
+
+                            <div class="mt-4 space-y-2.5 text-sm bg-slate-50 p-4 rounded-xl border border-slate-200">
+                                <div class="flex justify-between">
+                                    <span class="text-slate-500">QuickConnect ID:</span>
+                                    <span class="font-bold text-slate-800">Sunlogis</span>
+                                </div>
+                                <div class="flex justify-between">
+                                    <span class="text-slate-500">บัญชีผู้ใช้ (User):</span>
+                                    <span class="font-bold text-slate-800">Watcharagorn</span>
+                                </div>
+                                <div class="flex justify-between">
+                                    <span class="text-slate-500">โฟลเดอร์หลัก (Folder):</span>
+                                    <span class="font-bold text-blue-600">/DATA/ISO</span>
+                                </div>
+                                <div class="flex justify-between">
+                                    <span class="text-slate-500">โครงสร้างโฟลเดอร์ย่อย:</span>
+                                    <span class="text-xs font-mono text-slate-700 text-right">
+                                        /Documents<br/>/HR_Employees<br/>/MHE_Maintenance
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="mt-4 pt-3 border-t border-slate-100 flex gap-2">
+                            <button onclick="syncAllToSynology()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-1.5">
+                                <i class="fa-solid fa-rotate"></i> ซิงค์ไฟล์ทั้งหมดขึ้น Synology
+                            </button>
+                            <button onclick="switchTab('synology')" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold py-2.5 px-3 rounded-xl transition">
+                                เปิดดูไฟล์
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ========================================== -->
+            <!-- TAB 2: ISO MASTER FILE & ACCESS CONTROL    -->
+            <!-- ========================================== -->
+            <section id="tab-documents" class="hidden space-y-5">
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+                    <div class="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-100">
+                        <div>
+                            <h2 class="text-lg font-bold text-slate-900 flex items-center gap-2">
+                                <i class="fa-solid fa-book-bookmark text-blue-600"></i>
+                                บัญชีแม่บทเอกสาร (ISO Master File) และการกำหนดสิทธิ์เข้าถึงเอกสาร
+                            </h2>
+                            <p class="text-xs text-slate-500 mt-0.5">
+                                เก็บข้อมูลหมายเลขเอกสาร, ชื่อเอกสาร, วันที่เริ่มใช้, แก้ไขครั้งที่, วันที่แก้ไข พร้อมบังคับตั้งชื่อไฟล์ที่อัปโหลดเป็นรหัสเอกสารอัตโนมัติ และเก็บลง Synology Drive (/DATA/ISO/Documents)
+                            </p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button onclick="exportMasterFileCSV()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold px-3.5 py-2.5 rounded-xl flex items-center gap-1.5 transition">
+                                <i class="fa-solid fa-file-csv text-emerald-600"></i> Export Master File (CSV)
+                            </button>
+                            <button onclick="openDocumentModal()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow-sm transition">
+                                <i class="fa-solid fa-plus"></i> ขึ้นทะเบียนเอกสาร / Upload ไฟล์
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Search & Filter Bar (Requirement #4) -->
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-3 mt-4">
+                        <div class="md:col-span-2 relative">
+                            <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-3 text-slate-400 text-sm"></i>
+                            <input type="text" id="docSearchInput" oninput="loadDocuments()" placeholder="ค้นหาด้วย หมายเลขเอกสาร (เช่น QP-DCC-001) หรือ ชื่อเอกสาร..." class="w-full pl-9 pr-4 py-2 text-sm border border-slate-300 rounded-xl focus:outline-none focus:border-blue-500" />
+                        </div>
+                        <div>
+                            <select id="docCategoryFilter" onchange="loadDocuments()" class="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:outline-none focus:border-blue-500">
+                                <option value="">ทุกหมวดหมู่เอกสาร (All Categories)</option>
+                                <option value="QM">QM - คู่มือคุณภาพ (Quality Manual)</option>
+                                <option value="QP">QP - ระเบียบปฏิบัติงาน (Quality Procedure)</option>
+                                <option value="WI">WI - วิธีปฏิบัติงาน (Work Instruction)</option>
+                                <option value="FM">FM - แบบฟอร์ม (Form)</option>
+                                <option value="SD">SD - เอกสารสนับสนุน (Support Document)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <select id="docStatusFilter" onchange="loadDocuments()" class="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:outline-none focus:border-blue-500">
+                                <option value="">ทุกสถานะ (All Status)</option>
+                                <option value="Active">Active (บังคับใช้)</option>
+                                <option value="Draft">Draft (ฉบับร่าง)</option>
+                                <option value="Obsolete">Obsolete (ยกเลิก)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Master File Table -->
+                    <div class="overflow-x-auto mt-4">
+                        <table class="w-full text-left border-collapse text-sm">
+                            <thead>
+                                <tr class="bg-slate-50 text-slate-600 border-y border-slate-200 text-xs uppercase">
+                                    <th class="py-3 px-3 font-bold">หมายเลขเอกสาร</th>
+                                    <th class="py-3 px-3 font-bold">ชื่อเอกสาร</th>
+                                    <th class="py-3 px-3 font-bold text-center">วันที่เริ่มใช้</th>
+                                    <th class="py-3 px-3 font-bold text-center">แก้ไขครั้งที่</th>
+                                    <th class="py-3 px-3 font-bold text-center">วันที่แก้ไข</th>
+                                    <th class="py-3 px-3 font-bold">การเข้าถึง (Access Control)</th>
+                                    <th class="py-3 px-3 font-bold">ไฟล์เอกสาร (Synology ISO)</th>
+                                    <th class="py-3 px-3 font-bold text-right">จัดการ</th>
+                                </tr>
+                            </thead>
+                            <tbody id="documentsTableBody" class="divide-y divide-slate-100"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ========================================== -->
+            <!-- TAB 3: HR EMPLOYEE RECORDS & TRAINING      -->
+            <!-- ========================================== -->
+            <section id="tab-employees" class="hidden space-y-5">
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+                    <div class="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-100">
+                        <div>
+                            <h2 class="text-lg font-bold text-slate-900 flex items-center gap-2">
+                                <i class="fa-solid fa-id-card-clip text-indigo-600"></i>
+                                ประวัติพนักงานรายบุคคล แผนการฝึกอบรม และหลักฐานการฝึกอบรม
+                            </h2>
+                            <p class="text-xs text-slate-500 mt-0.5">
+                                จัดเก็บ (a) ใบสมัครงาน (b) แผนการฝึกอบรม (c) บันทึกข้อมูลการฝึกอบรมและหลักฐาน (d) ค้นหาและเรียกดูเป็นรายบุคคลตามชื่อหรือรหัสพนักงาน
+                            </p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button onclick="openEmployeeModal()" class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow-sm transition">
+                                <i class="fa-solid fa-user-plus"></i> เพิ่มพนักงาน & Upload ใบสมัครงาน
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Search Employee by Name or Employee Code (Requirement #5d) -->
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+                        <div class="md:col-span-2 relative">
+                            <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-3 text-slate-400 text-sm"></i>
+                            <input type="text" id="empSearchInput" oninput="loadEmployees()" placeholder="ค้นหาพนักงานรายบุคคลด้วย รหัสพนักงาน (เช่น EMP-001) หรือ ชื่อ-นามสกุล..." class="w-full pl-9 pr-4 py-2 text-sm border border-slate-300 rounded-xl focus:outline-none focus:border-indigo-500" />
+                        </div>
+                        <div>
+                            <select id="empDeptFilter" onchange="loadEmployees()" class="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:outline-none focus:border-indigo-500">
+                                <option value="">ทุกแผนก (All Departments)</option>
+                                <option value="Warehouse">Warehouse (คลังสินค้า)</option>
+                                <option value="QMR/ISO">QMR/ISO (ควบคุมเอกสาร)</option>
+                                <option value="HR">HR (ทรัพยากรบุคคล)</option>
+                                <option value="Management">Management (บริหาร)</option>
+                                <option value="Operations">Operations (ปฏิบัติการ)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Employee Cards List -->
+                    <div id="employeesGrid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 mt-5"></div>
+                </div>
+            </section>
+
+            <!-- ========================================== -->
+            <!-- TAB 4: EQUIPMENT (MHE, RACK) & PM ALERTS   -->
+            <!-- ========================================== -->
+            <section id="tab-equipment" class="hidden space-y-6">
+                <!-- Sub-section A: Equipment Registry -->
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+                    <div class="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-100">
+                        <div>
+                            <h2 class="text-lg font-bold text-slate-900 flex items-center gap-2">
+                                <i class="fa-solid fa-forklift text-amber-600"></i>
+                                ทะเบียนเครื่องจักร อุปกรณ์ MHE, ชั้นวางสินค้า (Rack) และอุปกรณ์ต่างๆ
+                            </h2>
+                            <p class="text-xs text-slate-500 mt-0.5">
+                                จัดเก็บทะเบียนเครื่องจักร/อุปกรณ์ วันที่ซื้อหรือติดตั้ง สถานที่ใช้งาน และผู้รับผิดชอบ
+                            </p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button onclick="openEquipmentModal()" class="bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow-sm transition">
+                                <i class="fa-solid fa-plus"></i> เพิ่มทะเบียนอุปกรณ์ (MHE / Rack)
+                            </button>
+                            <button onclick="openPmModal()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow-sm transition">
+                                <i class="fa-solid fa-calendar-plus"></i> สร้างแผนตรวจเช็ค PM
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+                        <div class="md:col-span-2 relative">
+                            <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-3 text-slate-400 text-sm"></i>
+                            <input type="text" id="equipSearchInput" oninput="loadEquipmentAndPm()" placeholder="ค้นหารหัสอุปกรณ์ (เช่น MHE-FL-001, RACK-WH1-A), ชื่อเครื่องจักร, สถานที่ตั้ง..." class="w-full pl-9 pr-4 py-2 text-sm border border-slate-300 rounded-xl focus:outline-none focus:border-amber-500" />
+                        </div>
+                        <div>
+                            <select id="equipCatFilter" onchange="loadEquipmentAndPm()" class="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:outline-none focus:border-amber-500">
+                                <option value="">ทุกประเภทอุปกรณ์ (All Categories)</option>
+                                <option value="MHE">MHE (Forklift / Reach Truck / Pallet Truck)</option>
+                                <option value="Rack">Rack (ระบบชั้นวางสินค้าในคลัง)</option>
+                                <option value="Safety">Safety (อุปกรณ์ความปลอดภัย)</option>
+                                <option value="Facility">Facility (ระบบอาคารและคลังสินค้า)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="overflow-x-auto mt-4">
+                        <table class="w-full text-left border-collapse text-sm">
+                            <thead>
+                                <tr class="bg-slate-50 text-slate-600 border-y border-slate-200 text-xs uppercase">
+                                    <th class="py-3 px-3 font-bold">รหัสอุปกรณ์</th>
+                                    <th class="py-3 px-3 font-bold">ชื่อเครื่องจักร / อุปกรณ์</th>
+                                    <th class="py-3 px-3 font-bold">ประเภท</th>
+                                    <th class="py-3 px-3 font-bold">ยี่ห้อ / รุ่น / SN</th>
+                                    <th class="py-3 px-3 font-bold text-center">วันที่ซื้อหรือติดตั้ง</th>
+                                    <th class="py-3 px-3 font-bold">สถานที่ตั้ง / ผู้รับผิดชอบ</th>
+                                    <th class="py-3 px-3 font-bold text-center">สถานะ</th>
+                                    <th class="py-3 px-3 font-bold text-right">จัดการ</th>
+                                </tr>
+                            </thead>
+                            <tbody id="equipmentTableBody" class="divide-y divide-slate-100"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Sub-section B: Preventive Maintenance (PM) Schedules, 30-Day Email Alert & Evidence Upload -->
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+                    <div class="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-100">
+                        <div>
+                            <h2 class="text-lg font-bold text-slate-900 flex items-center gap-2">
+                                <i class="fa-solid fa-screwdriver-wrench text-rose-600"></i>
+                                แผนการตรวจเช็คและซ่อมบำรุงรักษา (PM Schedule) & ระบบแจ้งเตือนล่วงหน้า 30 วัน
+                            </h2>
+                            <p class="text-xs text-slate-500 mt-0.5">
+                                ส่งอีเมลแจ้งผู้เกี่ยวข้องล่วงหน้า 30 วันก่อนถึงวันที่ตามแผน พร้อมรองรับการ Upload หลักฐานการซ่อมบำรุงรักษา (PM) เก็บลง Synology Drive (/DATA/ISO/MHE_Maintenance)
+                            </p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button onclick="triggerPmAlertsNow(true)" class="bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow-sm transition">
+                                <i class="fa-solid fa-envelope-open-text"></i> ตรวจสอบ & ส่งเมลแจ้งเตือนล่วงหน้า 30 วันทันที
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="overflow-x-auto mt-4">
+                        <table class="w-full text-left border-collapse text-sm">
+                            <thead>
+                                <tr class="bg-slate-50 text-slate-600 border-y border-slate-200 text-xs uppercase">
+                                    <th class="py-3 px-3 font-bold">รหัสแผน PM</th>
+                                    <th class="py-3 px-3 font-bold">อุปกรณ์ (MHE/Rack)</th>
+                                    <th class="py-3 px-3 font-bold">รายการตรวจเช็ค / ความถี่</th>
+                                    <th class="py-3 px-3 font-bold text-center">วันที่ตามแผน</th>
+                                    <th class="py-3 px-3 font-bold text-center">แจ้งเตือนล่วงหน้า 30 วัน</th>
+                                    <th class="py-3 px-3 font-bold">หลักฐานการทำ PM (Synology)</th>
+                                    <th class="py-3 px-3 font-bold text-right">บันทึกผล / Upload หลักฐาน</th>
+                                </tr>
+                            </thead>
+                            <tbody id="pmTableBody" class="divide-y divide-slate-100"></tbody>
+                        </table>
+                    </div>
+
+                    <!-- Email Notification Audit Logs -->
+                    <div class="mt-6 pt-4 border-t border-slate-200">
+                        <h4 class="text-xs font-bold uppercase text-slate-500 mb-2 flex items-center gap-1.5">
+                            <i class="fa-solid fa-clock-rotate-left"></i> ประวัติการส่งอีเมลแจ้งเตือนแผน PM ล่วงหน้า 30 วัน (Email Alert Logs)
+                        </h4>
+                        <div id="emailLogsContainer" class="max-h-48 overflow-y-auto text-xs divide-y divide-slate-100 bg-slate-50 rounded-xl border border-slate-200 p-2"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ========================================== -->
+            <!-- TAB 5: SYNOLOGY DRIVE EXPLORER (ISO)       -->
+            <!-- ========================================== -->
+            <section id="tab-synology" class="hidden space-y-5">
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+                    <div class="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-100">
+                        <div>
+                            <h2 class="text-lg font-bold text-slate-900 flex items-center gap-2">
+                                <i class="fa-solid fa-network-wired text-blue-600"></i>
+                                Synology Drive Storage Explorer (QuickConnect: Sunlogis / Folder: ISO)
+                            </h2>
+                            <p id="synoStatusSubtitle" class="text-xs text-slate-500 mt-0.5">
+                                กำลังตรวจสอบการเชื่อมต่อกับ Synology NAS...
+                            </p>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <button onclick="loadSynologyExplorer('')" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold px-3.5 py-2 rounded-xl transition">
+                                <i class="fa-solid fa-house"></i> โฟลเดอร์หลัก (/DATA/ISO)
+                            </button>
+                            <button onclick="loadSynologyExplorer('Documents')" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold px-3.5 py-2 rounded-xl transition">
+                                <i class="fa-solid fa-folder-open text-amber-500"></i> /Documents
+                            </button>
+                            <button onclick="loadSynologyExplorer('HR_Employees')" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold px-3.5 py-2 rounded-xl transition">
+                                <i class="fa-solid fa-folder-open text-indigo-500"></i> /HR_Employees
+                            </button>
+                            <button onclick="loadSynologyExplorer('MHE_Maintenance')" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold px-3.5 py-2 rounded-xl transition">
+                                <i class="fa-solid fa-folder-open text-emerald-500"></i> /MHE_Maintenance
+                            </button>
+                            <button onclick="syncAllToSynology()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-4 py-2 rounded-xl shadow-sm transition">
+                                <i class="fa-solid fa-cloud-arrow-up"></i> Sync All Now
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="mt-4 bg-slate-900 text-slate-100 p-4 rounded-xl flex flex-wrap items-center justify-between gap-4 text-xs">
+                        <div class="flex items-center gap-3">
+                            <span class="px-2.5 py-1 rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30">CONNECTED</span>
+                            <span>QuickConnect ID: <strong>Sunlogis</strong></span>
+                            <span>|</span>
+                            <span>User: <strong>Watcharagorn</strong></span>
+                            <span>|</span>
+                            <span>Resolved DSM Endpoint: <strong id="synoResolvedUrl" class="text-blue-300">https://172.16.100.30:5001</strong></span>
+                        </div>
+                        <div class="font-mono text-amber-300" id="synoCurrentPathDisplay">Path: /DATA/ISO</div>
+                    </div>
+
+                    <div id="synoFilesList" class="mt-4 divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden"></div>
+                </div>
+            </section>
+
+            <!-- ========================================== -->
+            <!-- TAB 6: SETTINGS (SYNOLOGY, SMTP, USERS)    -->
+            <!-- ========================================== -->
+            <section id="tab-settings" class="hidden space-y-6">
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <!-- Synology & SMTP Settings Form -->
+                    <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 space-y-4">
+                        <h3 class="text-base font-bold text-slate-900 flex items-center gap-2 border-b pb-3">
+                            <i class="fa-solid fa-gears text-blue-600"></i>
+                            ตั้งค่าการเชื่อมต่อ Synology Drive & ระบบส่งอีเมล SMTP (PM 30 วัน)
+                        </h3>
+
+                        <div class="space-y-3 text-sm">
+                            <div class="font-bold text-xs uppercase text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg">
+                                1. ตั้งค่า Synology Drive (ข้อ 6)
+                            </div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-600 mb-1">QuickConnect ID</label>
+                                    <input type="text" id="cfg_synology_quickconnect" class="w-full px-3 py-2 border rounded-xl text-sm" />
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-600 mb-1">Folder หลัก</label>
+                                    <input type="text" id="cfg_synology_folder" class="w-full px-3 py-2 border rounded-xl text-sm" />
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-600 mb-1">Synology User</label>
+                                    <input type="text" id="cfg_synology_user" class="w-full px-3 py-2 border rounded-xl text-sm" />
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-600 mb-1">Synology Password</label>
+                                    <input type="password" id="cfg_synology_password" class="w-full px-3 py-2 border rounded-xl text-sm" />
+                                </div>
+                            </div>
+
+                            <div class="font-bold text-xs uppercase text-rose-700 bg-rose-50 px-3 py-1.5 rounded-lg mt-4">
+                                2. ตั้งค่า SMTP Server สำหรับส่งอีเมลแจ้งเตือน PM ล่วงหน้า 30 วัน (ข้อ 7d)
+                            </div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-600 mb-1">SMTP Host (เช่น smtp.gmail.com)</label>
+                                    <input type="text" id="cfg_smtp_host" class="w-full px-3 py-2 border rounded-xl text-sm" />
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-600 mb-1">SMTP Port (587 หรือ 465)</label>
+                                    <input type="text" id="cfg_smtp_port" class="w-full px-3 py-2 border rounded-xl text-sm" />
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-600 mb-1">SMTP Username / Email</label>
+                                    <input type="text" id="cfg_smtp_user" placeholder="your-email@company.com" class="w-full px-3 py-2 border rounded-xl text-sm" />
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-600 mb-1">SMTP Password / App Password</label>
+                                    <input type="password" id="cfg_smtp_password" placeholder="App Password" class="w-full px-3 py-2 border rounded-xl text-sm" />
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-600 mb-1">Sender Email (ชื่อผู้ส่ง)</label>
+                                    <input type="text" id="cfg_smtp_sender" class="w-full px-3 py-2 border rounded-xl text-sm" />
+                                </div>
+                                <div>
+                                    <label class="block text-xs font-semibold text-slate-600 mb-1">แจ้งเตือนล่วงหน้า (วัน)</label>
+                                    <input type="number" id="cfg_pm_advance_days" class="w-full px-3 py-2 border rounded-xl text-sm" />
+                                </div>
+                            </div>
+
+                            <div class="pt-3 flex flex-wrap gap-2">
+                                <button onclick="saveSystemSettings()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition">
+                                    <i class="fa-solid fa-floppy-disk"></i> บันทึกการตั้งค่า
+                                </button>
+                                <button onclick="testSmtpEmail()" class="bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition">
+                                    <i class="fa-solid fa-paper-plane"></i> ทดสอบส่งอีเมล
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- User & Role Access Control Management -->
+                    <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 space-y-4">
+                        <div class="flex items-center justify-between border-b pb-3">
+                            <h3 class="text-base font-bold text-slate-900 flex items-center gap-2">
+                                <i class="fa-solid fa-users-shield text-indigo-600"></i>
+                                จัดการผู้ใช้งานและระดับสิทธิ์การเข้าถึงเอกสาร (ข้อ 1)
+                            </h3>
+                        </div>
+
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-sm bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+                            <input type="text" id="new_u_username" placeholder="Username (เช่น warehouse01)" class="px-3 py-2 border rounded-lg text-xs" />
+                            <input type="password" id="new_u_password" placeholder="รหัสผ่าน (Password)" class="px-3 py-2 border rounded-lg text-xs" />
+                            <input type="text" id="new_u_fullname" placeholder="ชื่อ-นามสกุล" class="px-3 py-2 border rounded-lg text-xs" />
+                            <select id="new_u_role" class="px-3 py-2 border rounded-lg text-xs">
+                                <option value="Viewer">Viewer (ผู้ใช้งานทั่วไป / ดูเอกสารที่อนุญาต)</option>
+                                <option value="DCC">DCC (เจ้าหน้าที่ควบคุมเอกสาร ISO)</option>
+                                <option value="HR">HR (เจ้าหน้าที่บุคคลและฝึกอบรม)</option>
+                                <option value="Maintenance">Maintenance (วิศวกร MHE & PM)</option>
+                                <option value="Admin">Admin (ผู้ดูแลระบบทั้งหมด)</option>
+                            </select>
+                            <select id="new_u_dept" class="px-3 py-2 border rounded-lg text-xs">
+                                <option value="Warehouse">Warehouse</option>
+                                <option value="QMR/ISO">QMR/ISO</option>
+                                <option value="HR">HR</option>
+                                <option value="Management">Management</option>
+                                <option value="Operations">Operations</option>
+                            </select>
+                            <button onclick="createNewUser()" class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-3 py-2 rounded-lg transition">
+                                <i class="fa-solid fa-user-plus"></i> เพิ่มผู้ใช้งาน
+                            </button>
+                        </div>
+
+                        <div id="usersListContainer" class="divide-y divide-slate-100 text-sm"></div>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <!-- ===================================================== -->
+    <!-- MODAL 1: CREATE / EDIT ISO DOCUMENT & ACCESS CONTROL  -->
+    <!-- ===================================================== -->
+    <div id="documentModal" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-4 overflow-y-auto">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-6 space-y-4 my-8 max-h-[92vh] overflow-y-auto">
+            <div class="flex items-center justify-between border-b pb-3">
+                <h3 id="docModalTitle" class="text-lg font-bold text-slate-900">ขึ้นทะเบียนเอกสาร Master File & กำหนดสิทธิ์การเข้าถึง</h3>
+                <button onclick="closeModal('documentModal')" class="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
+            </div>
+
+            <form id="documentForm" onsubmit="submitDocumentForm(event)" class="space-y-4 text-sm">
+                <input type="hidden" id="doc_id" />
+
+                <!-- 2a, 2b, Category -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">2a. หมายเลขเอกสาร (รหัสเอกสาร) *</label>
+                        <input type="text" id="doc_code" required oninput="updateExpectedFilenamePreview()" placeholder="เช่น QP-WH-001" class="w-full px-3 py-2 border border-slate-300 rounded-xl font-mono uppercase focus:border-blue-500 focus:outline-none" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">หมวดหมู่เอกสาร *</label>
+                        <select id="doc_category" class="w-full px-3 py-2 border border-slate-300 rounded-xl">
+                            <option value="QM">QM - Quality Manual</option>
+                            <option value="QP">QP - Quality Procedure</option>
+                            <option value="WI">WI - Work Instruction</option>
+                            <option value="FM">FM - Form (แบบฟอร์ม)</option>
+                            <option value="SD">SD - Support Document</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">สถานะเอกสาร</label>
+                        <select id="doc_status" class="w-full px-3 py-2 border border-slate-300 rounded-xl">
+                            <option value="Active">Active (บังคับใช้)</option>
+                            <option value="Draft">Draft (ร่าง)</option>
+                            <option value="Obsolete">Obsolete (ยกเลิก)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">2b. ชื่อเอกสาร (Document Title) *</label>
+                    <input type="text" id="doc_title" required placeholder="ระบุชื่อเอกสาร..." class="w-full px-3 py-2 border border-slate-300 rounded-xl" />
+                </div>
+
+                <!-- 2c, 2d, 2e -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3 bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">2c. วันที่เริ่มใช้ (Effective Date) *</label>
+                        <input type="date" id="doc_effective_date" required class="w-full px-3 py-2 border border-slate-300 rounded-xl bg-white" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">2d. แก้ไขครั้งที่ (Revision No.) *</label>
+                        <input type="number" id="doc_revision_no" min="0" value="0" required class="w-full px-3 py-2 border border-slate-300 rounded-xl bg-white" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">2e. วันที่แก้ไข (Revision Date) *</label>
+                        <input type="date" id="doc_revision_date" required class="w-full px-3 py-2 border border-slate-300 rounded-xl bg-white" />
+                    </div>
+                </div>
+
+                <!-- 1. Document Access Control -->
+                <div class="bg-blue-50/60 p-4 rounded-xl border border-blue-200 space-y-3">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold text-blue-900 uppercase flex items-center gap-1.5">
+                            <i class="fa-solid fa-lock"></i> 1. การระบุสิทธิ์การเข้าถึงเอกสารนี้ (Access Control)
+                        </span>
+                        <select id="doc_confidentiality" class="text-xs px-2.5 py-1 border border-blue-300 rounded-lg bg-white font-semibold text-blue-900">
+                            <option value="Public">Public (ทุกคนเข้าถึงได้)</option>
+                            <option value="Internal">Internal (ภายในองค์กรตามสิทธิ์)</option>
+                            <option value="Restricted">Restricted (จำกัดเฉพาะแผนก/กลุ่มสิทธิ์)</option>
+                            <option value="Confidential">Confidential (ลับเฉพาะผู้ระบุชื่อ)</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-700 mb-1">กลุ่มสิทธิ์ผู้ใช้งานที่อนุญาต (Allowed Roles):</label>
+                        <div class="flex flex-wrap gap-3 text-xs">
+                            <label class="flex items-center gap-1.5"><input type="checkbox" name="doc_role_chk" value="Admin" checked /> Admin</label>
+                            <label class="flex items-center gap-1.5"><input type="checkbox" name="doc_role_chk" value="DCC" checked /> DCC</label>
+                            <label class="flex items-center gap-1.5"><input type="checkbox" name="doc_role_chk" value="HR" checked /> HR</label>
+                            <label class="flex items-center gap-1.5"><input type="checkbox" name="doc_role_chk" value="Maintenance" checked /> Maintenance</label>
+                            <label class="flex items-center gap-1.5"><input type="checkbox" name="doc_role_chk" value="Viewer" checked /> Viewer</label>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-700 mb-1">แผนกที่อนุญาตให้เข้าถึง (Allowed Departments):</label>
+                        <div class="flex flex-wrap gap-3 text-xs">
+                            <label class="flex items-center gap-1.5"><input type="checkbox" name="doc_dept_chk" value="All" checked /> ทุกแผนก (All)</label>
+                            <label class="flex items-center gap-1.5"><input type="checkbox" name="doc_dept_chk" value="Management" /> Management</label>
+                            <label class="flex items-center gap-1.5"><input type="checkbox" name="doc_dept_chk" value="QMR/ISO" /> QMR/ISO</label>
+                            <label class="flex items-center gap-1.5"><input type="checkbox" name="doc_dept_chk" value="HR" /> HR</label>
+                            <label class="flex items-center gap-1.5"><input type="checkbox" name="doc_dept_chk" value="Warehouse" /> Warehouse</label>
+                            <label class="flex items-center gap-1.5"><input type="checkbox" name="doc_dept_chk" value="Operations" /> Operations</label>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-700 mb-1">ระบุชื่อผู้ใช้งานเฉพาะเจาะจง (คั่นด้วยลูกน้ำ เช่น admin, hr, maint):</label>
+                        <input type="text" id="doc_allowed_users" placeholder="เว้นว่างหากใช้เกณฑ์ตามกลุ่มสิทธิ์/แผนกด้านบน" class="w-full px-3 py-1.5 border border-blue-200 rounded-lg text-xs bg-white" />
+                    </div>
+                </div>
+
+                <!-- 3. Upload Document File (Auto renamed to Document Code) -->
+                <div class="bg-emerald-50/70 p-4 rounded-xl border border-emerald-200 space-y-2">
+                    <label class="block text-xs font-bold text-emerald-900">
+                        <i class="fa-solid fa-cloud-arrow-up"></i> 3. Upload ไฟล์เอกสาร (ระบบจะเปลี่ยนชื่อไฟล์เป็นรหัสเอกสารอัตโนมัติ และส่งเข้า Synology /DATA/ISO/Documents)
+                    </label>
+                    <input type="file" id="doc_file" onchange="updateExpectedFilenamePreview()" class="w-full text-xs text-slate-700 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-emerald-600 file:text-white hover:file:bg-emerald-700" />
+                    <div id="expectedFilenameBadge" class="text-xs text-emerald-800 font-mono">
+                        ชื่อไฟล์ที่จะถูกบันทึก: <strong id="expectedFilenameText">รหัสเอกสาร.pdf</strong>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">รายละเอียดการแก้ไข (Revision Change Note)</label>
+                        <input type="text" id="doc_change_summary" placeholder="เช่น ปรับปรุงขั้นตอนการตรวจรับสินค้า" class="w-full px-3 py-2 border rounded-xl text-xs" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">หมายเหตุเพิ่มเติม</label>
+                        <input type="text" id="doc_notes" class="w-full px-3 py-2 border rounded-xl text-xs" />
+                    </div>
+                </div>
+
+                <div class="flex justify-end gap-2 pt-3 border-t">
+                    <button type="button" onclick="closeModal('documentModal')" class="px-4 py-2 rounded-xl border text-xs font-semibold text-slate-600 hover:bg-slate-50">ยกเลิก</button>
+                    <button type="submit" class="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow">
+                        <i class="fa-solid fa-check"></i> บันทึกข้อมูลและซิงค์ Synology
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===================================================== -->
+    <!-- MODAL 2: EMPLOYEE DOSSIER (INDIVIDUAL VIEW - REQ #5)  -->
+    <!-- ===================================================== -->
+    <div id="employeeDossierModal" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-4 overflow-y-auto">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-4xl w-full p-6 space-y-5 my-8 max-h-[92vh] overflow-y-auto">
+            <div class="flex flex-wrap items-center justify-between gap-2 border-b pb-3">
+                <div>
+                    <span class="text-xs font-bold uppercase px-2.5 py-0.5 rounded bg-indigo-100 text-indigo-800" id="dossierEmpCode">EMP-001</span>
+                    <h3 id="dossierEmpName" class="text-xl font-bold text-slate-900 mt-1">ชื่อพนักงาน</h3>
+                    <p id="dossierEmpMeta" class="text-xs text-slate-500"></p>
+                </div>
+                <div class="flex items-center gap-2 no-print">
+                    <button onclick="window.print()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold px-3 py-2 rounded-xl">
+                        <i class="fa-solid fa-print"></i> พิมพ์แฟ้มประวัติรายบุคคล
+                    </button>
+                    <button onclick="closeModal('employeeDossierModal')" class="text-slate-400 hover:text-slate-600 text-2xl px-2">&times;</button>
+                </div>
+            </div>
+
+            <!-- 5a. Job Application File Section -->
+            <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                <div>
+                    <h4 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+                        <i class="fa-solid fa-file-user text-indigo-600"></i>
+                        5a. เอกสารใบสมัครงาน (Job Application Document)
+                    </h4>
+                    <p id="dossierAppFileStatus" class="text-xs text-slate-500 mt-0.5"></p>
+                </div>
+                <div id="dossierAppActions" class="flex items-center gap-2"></div>
+            </div>
+
+            <!-- 5b & 5c. Training Plans & Training Records + Evidence -->
+            <div class="space-y-3">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                        <h4 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+                            <i class="fa-solid fa-chalkboard-user text-emerald-600"></i>
+                            5b & 5c. แผนการฝึกอบรม (Training Plan) และบันทึกประวัติการฝึกอบรมพร้อมหลักฐาน
+                        </h4>
+                        <p class="text-xs text-slate-500">จัดเก็บหลักฐานการฝึกอบรมรายบุคคลลง Synology Drive (/DATA/ISO/HR_Employees)</p>
+                    </div>
+                    <button onclick="openTrainingModalForCurrentEmp()" class="no-print bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3.5 py-2 rounded-xl flex items-center gap-1.5">
+                        <i class="fa-solid fa-plus"></i> เพิ่มแผนฝึกอบรม / บันทึกผลและหลักฐาน
+                    </button>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse text-xs">
+                        <thead>
+                            <tr class="bg-slate-100 text-slate-700 border-y border-slate-200 uppercase">
+                                <th class="py-2.5 px-3">รหัส/หัวข้อหลักสูตรการฝึกอบรม</th>
+                                <th class="py-2.5 px-3">ประเภท</th>
+                                <th class="py-2.5 px-3 text-center">วันที่ตามแผน</th>
+                                <th class="py-2.5 px-3 text-center">วันที่อบรมจริง</th>
+                                <th class="py-2.5 px-3 text-center">สถานะแผน</th>
+                                <th class="py-2.5 px-3 text-center">ผลการประเมิน</th>
+                                <th class="py-2.5 px-3">หลักฐานการอบรม (Synology)</th>
+                                <th class="py-2.5 px-3 text-right no-print">จัดการ</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dossierTrainingTableBody" class="divide-y divide-slate-100"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================================================== -->
+    <!-- MODAL 3: ADD / EDIT EMPLOYEE & JOB APPLICATION        -->
+    <!-- ===================================================== -->
+    <div id="employeeFormModal" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6 space-y-4">
+            <div class="flex items-center justify-between border-b pb-3">
+                <h3 class="text-base font-bold text-slate-900">ข้อมูลพนักงาน & Upload ใบสมัครงาน (5a)</h3>
+                <button onclick="closeModal('employeeFormModal')" class="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
+            </div>
+            <form id="employeeForm" onsubmit="submitEmployeeForm(event)" class="space-y-3 text-sm">
+                <input type="hidden" id="emp_id" />
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">รหัสพนักงาน *</label>
+                        <input type="text" id="emp_code" required placeholder="เช่น EMP-004" class="w-full px-3 py-2 border rounded-xl font-mono uppercase" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">วันที่เริ่มงาน *</label>
+                        <input type="date" id="emp_hire_date" required class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">ชื่อ - นามสกุล *</label>
+                    <input type="text" id="emp_full_name" required placeholder="ระบุชื่อ-นามสกุลพนักงาน" class="w-full px-3 py-2 border rounded-xl" />
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">แผนก *</label>
+                        <input type="text" id="emp_department" required placeholder="เช่น Warehouse" class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">ตำแหน่ง *</label>
+                        <input type="text" id="emp_position" required placeholder="เช่น Forklift Operator" class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">อีเมล</label>
+                        <input type="email" id="emp_email" class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">เบอร์โทรศัพท์</label>
+                        <input type="text" id="emp_phone" class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                </div>
+                <div class="bg-indigo-50 p-3.5 rounded-xl border border-indigo-200">
+                    <label class="block text-xs font-bold text-indigo-900 mb-1">
+                        <i class="fa-solid fa-file-arrow-up"></i> 5a. แนบไฟล์ใบสมัครงาน (Job Application PDF/Image)
+                    </label>
+                    <input type="file" id="emp_application_file" class="w-full text-xs" />
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">หมายเหตุ</label>
+                    <input type="text" id="emp_notes" class="w-full px-3 py-2 border rounded-xl" />
+                </div>
+                <div class="flex justify-end gap-2 pt-2 border-t">
+                    <button type="button" onclick="closeModal('employeeFormModal')" class="px-4 py-2 rounded-xl border text-xs font-semibold">ยกเลิก</button>
+                    <button type="submit" class="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold">บันทึกข้อมูลพนักงาน</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===================================================== -->
+    <!-- MODAL 4: ADD / EDIT TRAINING PLAN & RECORD (5b, 5c)   -->
+    <!-- ===================================================== -->
+    <div id="trainingFormModal" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6 space-y-4">
+            <div class="flex items-center justify-between border-b pb-3">
+                <h3 class="text-base font-bold text-slate-900">5b & 5c. แผนการฝึกอบรม และบันทึกหลักฐานการฝึกอบรม</h3>
+                <button onclick="closeModal('trainingFormModal')" class="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
+            </div>
+            <form id="trainingForm" onsubmit="submitTrainingForm(event)" class="space-y-3 text-sm">
+                <input type="hidden" id="tr_id" />
+                <input type="hidden" id="tr_emp_id" />
+                <div class="grid grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">รหัสหลักสูตร</label>
+                        <input type="text" id="tr_course_code" placeholder="เช่น TRN-ISO-02" class="w-full px-3 py-2 border rounded-xl font-mono uppercase" />
+                    </div>
+                    <div class="col-span-2">
+                        <label class="block text-xs font-bold text-slate-700 mb-1">ประเภทการอบรม</label>
+                        <select id="tr_training_type" class="w-full px-3 py-2 border rounded-xl">
+                            <option value="ISO Standard">ISO Standard (มาตรฐาน ISO)</option>
+                            <option value="OJT">OJT (On-the-Job Training)</option>
+                            <option value="In-house">In-house Training</option>
+                            <option value="External">External Training</option>
+                            <option value="Safety/MHE">Safety / MHE Operation</option>
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">หัวข้อหลักสูตรการฝึกอบรม *</label>
+                    <input type="text" id="tr_course_title" required placeholder="ระบุชื่อหลักสูตร..." class="w-full px-3 py-2 border rounded-xl" />
+                </div>
+                <div class="grid grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">วันที่ตามแผน (Plan) *</label>
+                        <input type="date" id="tr_planned_date" required class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">วันที่อบรมจริง</label>
+                        <input type="date" id="tr_actual_date" class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">จำนวนชั่วโมง</label>
+                        <input type="number" step="0.5" id="tr_duration_hours" value="6" class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                </div>
+                <div class="grid grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">สถานะการอบรม</label>
+                        <select id="tr_status" class="w-full px-3 py-2 border rounded-xl">
+                            <option value="Planned">Planned (ตามแผน)</option>
+                            <option value="Completed">Completed (อบรมแล้ว)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">ผลการประเมิน</label>
+                        <select id="tr_evaluation_result" class="w-full px-3 py-2 border rounded-xl">
+                            <option value="Pending">Pending (รอผล)</option>
+                            <option value="Pass">Pass (ผ่านเกณฑ์)</option>
+                            <option value="Fail">Fail (ไม่ผ่าน)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">คะแนน / เกรด</label>
+                        <input type="text" id="tr_score" placeholder="เช่น 90/100" class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-600 mb-1">วิทยากร / ผู้ฝึกสอน</label>
+                    <input type="text" id="tr_trainer" class="w-full px-3 py-2 border rounded-xl" />
+                </div>
+                <div class="bg-emerald-50 p-3.5 rounded-xl border border-emerald-200">
+                    <label class="block text-xs font-bold text-emerald-900 mb-1">
+                        <i class="fa-solid fa-certificate"></i> 5c. Upload หลักฐานการฝึกอบรม (ใบเซ็นชื่อ / Certificate / ข้อสอบ)
+                    </label>
+                    <input type="file" id="tr_evidence_file" class="w-full text-xs" />
+                </div>
+                <div class="flex justify-end gap-2 pt-2 border-t">
+                    <button type="button" onclick="closeModal('trainingFormModal')" class="px-4 py-2 rounded-xl border text-xs font-semibold">ยกเลิก</button>
+                    <button type="submit" class="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold">บันทึกข้อมูลการฝึกอบรม</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===================================================== -->
+    <!-- MODAL 5: ADD / EDIT EQUIPMENT (MHE, RACK - REQ #7a,b) -->
+    <!-- ===================================================== -->
+    <div id="equipmentModal" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6 space-y-4">
+            <div class="flex items-center justify-between border-b pb-3">
+                <h3 class="text-base font-bold text-slate-900">7a & 7b. ทะเบียนเครื่องจักร อุปกรณ์ MHE, Rack และอุปกรณ์ต่างๆ</h3>
+                <button onclick="closeModal('equipmentModal')" class="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
+            </div>
+            <form id="equipmentForm" onsubmit="submitEquipmentForm(event)" class="space-y-3 text-sm">
+                <input type="hidden" id="eq_id" />
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">รหัสเครื่องจักร/อุปกรณ์ *</label>
+                        <input type="text" id="eq_code" required placeholder="เช่น MHE-FL-002" class="w-full px-3 py-2 border rounded-xl font-mono uppercase" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">ประเภทอุปกรณ์ *</label>
+                        <select id="eq_category" class="w-full px-3 py-2 border rounded-xl">
+                            <option value="MHE">MHE (รถโฟร์คลิฟท์ / รถยกคลังสินค้า)</option>
+                            <option value="Rack">Rack (ชั้นวางสินค้าคลังสินค้า)</option>
+                            <option value="Safety">Safety (อุปกรณ์ความปลอดภัย)</option>
+                            <option value="Facility">Facility (อุปกรณ์อาคาร/คลังสินค้า)</option>
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">ชื่อเครื่องจักร / อุปกรณ์ *</label>
+                    <input type="text" id="eq_name" required placeholder="ระบุชื่ออุปกรณ์..." class="w-full px-3 py-2 border rounded-xl" />
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">ยี่ห้อ / รุ่น</label>
+                        <input type="text" id="eq_brand" placeholder="เช่น TOYOTA 8FBE25" class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">Serial No.</label>
+                        <input type="text" id="eq_serial" class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3 bg-amber-50 p-3 rounded-xl border border-amber-200">
+                    <div>
+                        <label class="block text-xs font-bold text-amber-900 mb-1">7b. วันที่ซื้อหรือติดตั้ง *</label>
+                        <input type="date" id="eq_purchase_date" required class="w-full px-3 py-2 border rounded-xl bg-white" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-amber-900 mb-1">วันหมดประกัน (ถ้ามี)</label>
+                        <input type="date" id="eq_warranty_date" class="w-full px-3 py-2 border rounded-xl bg-white" />
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">สถานที่ตั้ง / โซนคลังสินค้า</label>
+                        <input type="text" id="eq_location" placeholder="เช่น Warehouse Zone A" class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">ผู้รับผิดชอบ</label>
+                        <input type="text" id="eq_responsible" class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">อีเมลผู้เกี่ยวข้อง (สำหรับรับแจ้งเตือน PM ล่วงหน้า 30 วัน)</label>
+                    <input type="text" id="eq_email" placeholder="maintenance@sunlogis.com, watcharagorn@sunlogis.com" class="w-full px-3 py-2 border rounded-xl text-xs" />
+                </div>
+                <div class="flex justify-end gap-2 pt-2 border-t">
+                    <button type="button" onclick="closeModal('equipmentModal')" class="px-4 py-2 rounded-xl border text-xs font-semibold">ยกเลิก</button>
+                    <button type="submit" class="px-5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold">บันทึกทะเบียนอุปกรณ์</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===================================================== -->
+    <!-- MODAL 6: PM SCHEDULE & EVIDENCE UPLOAD (7c, 7d, 7e)   -->
+    <!-- ===================================================== -->
+    <div id="pmModal" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-4 overflow-y-auto">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-xl w-full p-6 space-y-4 my-8">
+            <div class="flex items-center justify-between border-b pb-3">
+                <h3 class="text-base font-bold text-slate-900">7c, 7d, 7e. แผนซ่อมบำรุงรักษา (PM) & Upload หลักฐานการทำ PM</h3>
+                <button onclick="closeModal('pmModal')" class="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
+            </div>
+            <form id="pmForm" onsubmit="submitPmForm(event)" class="space-y-3 text-sm">
+                <input type="hidden" id="pm_id" />
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">เลือกเครื่องจักร/อุปกรณ์ *</label>
+                        <select id="pm_equip_id" required class="w-full px-3 py-2 border rounded-xl"></select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">รหัสแผน PM *</label>
+                        <input type="text" id="pm_code" required placeholder="เช่น PM-2026-Q4-005" class="w-full px-3 py-2 border rounded-xl font-mono uppercase" />
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">7c. รายการตรวจเช็คหรือซ่อมบำรุงรักษา (PM Title) *</label>
+                    <input type="text" id="pm_title" required placeholder="เช่น ตรวจเช็คระบบเบรก ไฮดรอลิก และโครงสร้างความปลอดภัยประจำไตรมาส" class="w-full px-3 py-2 border rounded-xl" />
+                </div>
+                <div class="grid grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">ความถี่ (Frequency)</label>
+                        <select id="pm_frequency" class="w-full px-3 py-2 border rounded-xl">
+                            <option value="Monthly">Monthly (รายเดือน)</option>
+                            <option value="Quarterly">Quarterly (ทุก 3 เดือน)</option>
+                            <option value="Semi-Annual">Semi-Annual (ทุก 6 เดือน)</option>
+                            <option value="Annual">Annual (ประจำปี)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-rose-700 mb-1">วันที่ตามแผน (Planned) *</label>
+                        <input type="date" id="pm_planned_date" required class="w-full px-3 py-2 border border-rose-300 rounded-xl" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">แจ้งเตือนล่วงหน้า (วัน)</label>
+                        <input type="number" id="pm_notify_days" value="30" class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">7d. อีเมลผู้เกี่ยวข้อง (ส่งแจ้งเตือนล่วงหน้า 30 วัน)</label>
+                    <input type="text" id="pm_notify_emails" placeholder="maintenance@sunlogis.com, watcharagorn@sunlogis.com" class="w-full px-3 py-2 border rounded-xl text-xs" />
+                </div>
+
+                <div class="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-3">
+                    <div class="text-xs font-bold text-slate-700 uppercase">บันทึกผลการตรวจเช็ค / ซ่อมบำรุงรักษา</div>
+                    <div class="grid grid-cols-3 gap-3">
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1">สถานะ PM</label>
+                            <select id="pm_status" class="w-full px-3 py-2 border rounded-xl bg-white">
+                                <option value="Scheduled">Scheduled (ตามแผน)</option>
+                                <option value="Notified">Notified (แจ้งเตือนเมลแล้ว)</option>
+                                <option value="Completed">Completed (ทำ PM เสร็จสิ้น)</option>
+                                <option value="Overdue">Overdue (เกินกำหนด)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1">วันที่ทำ PM จริง</label>
+                            <input type="date" id="pm_actual_date" class="w-full px-3 py-2 border rounded-xl bg-white" />
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1">ผู้ดำเนินการ / ช่าง</label>
+                            <input type="text" id="pm_performed_by" class="w-full px-3 py-2 border rounded-xl bg-white" />
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">สรุปผลการตรวจเช็ค / การซ่อมบำรุง</label>
+                        <input type="text" id="pm_result_summary" placeholder="ระบุผลการตรวจเช็ค หรืออะไหล่ที่เปลี่ยน..." class="w-full px-3 py-2 border rounded-xl bg-white" />
+                    </div>
+                </div>
+
+                <div class="bg-emerald-50 p-3.5 rounded-xl border border-emerald-200">
+                    <label class="block text-xs font-bold text-emerald-900 mb-1">
+                        <i class="fa-solid fa-file-shield"></i> 7e. Upload หลักฐานการซ่อมบำรุงรักษา (PM Checksheet / Service Report / รูปถ่าย)
+                    </label>
+                    <input type="file" id="pm_evidence_file" class="w-full text-xs" />
+                </div>
+
+                <div class="flex justify-end gap-2 pt-2 border-t">
+                    <button type="button" onclick="closeModal('pmModal')" class="px-4 py-2 rounded-xl border text-xs font-semibold">ยกเลิก</button>
+                    <button type="submit" class="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold">บันทึกแผนและหลักฐาน PM</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===================================================== -->
+    <!-- MODAL 7: REVISION HISTORY MODAL                       -->
+    <!-- ===================================================== -->
+    <div id="revisionModal" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-6 space-y-4">
+            <div class="flex items-center justify-between border-b pb-3">
+                <h3 id="revModalTitle" class="text-base font-bold text-slate-900">ประวัติการแก้ไขเอกสาร (Revision History)</h3>
+                <button onclick="closeModal('revisionModal')" class="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
+            </div>
+            <div id="revisionListContainer" class="divide-y divide-slate-100 max-h-96 overflow-y-auto text-sm"></div>
+        </div>
+    </div>
+
+    <!-- ===================================================== -->
+    <!-- MODAL 8: LOGIN MODAL                                  -->
+    <!-- ===================================================== -->
+    <div id="loginModal" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-4">
+            <div class="flex items-center justify-between border-b pb-3">
+                <h3 class="text-base font-bold text-slate-900">เข้าสู่ระบบ (User Authentication)</h3>
+                <button onclick="closeModal('loginModal')" class="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
+            </div>
+            <form onsubmit="submitLoginForm(event)" class="space-y-3 text-sm">
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">ชื่อผู้ใช้ (Username)</label>
+                    <input type="text" id="login_username" required placeholder="admin, dcc, hr, maint, viewer" class="w-full px-3 py-2 border rounded-xl" />
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">รหัสผ่าน (Password)</label>
+                    <input type="password" id="login_password" required placeholder="เช่น admin123" class="w-full px-3 py-2 border rounded-xl" />
+                </div>
+                <div class="text-[11px] text-slate-500 bg-slate-50 p-2.5 rounded-lg">
+                    บัญชีทดสอบ: <code>admin/admin123</code>, <code>dcc/dcc123</code>, <code>hr/hr123</code>, <code>maint/maint123</code>, <code>viewer/viewer123</code>
+                </div>
+                <div class="flex justify-end gap-2 pt-2">
+                    <button type="submit" class="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold">เข้าสู่ระบบ</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

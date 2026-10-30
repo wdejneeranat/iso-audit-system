@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: sunlogis-iso-audit
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: TZ
+        value: Asia/Bangkok
+      - key: ISO_DB_PATH
+        value: /app/storage/iso_audit.db

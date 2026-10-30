@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  iso-audit-app:
+    build: .
+    container_name: sunlogis-iso-audit
+    restart: unless-stopped
+    ports:
+      - "8085:8000"
+    environment:
+      - TZ=Asia/Bangkok
+      - ISO_DB_PATH=/app/storage/iso_audit.db
+    volumes:
+      - ./storage:/app/storage
