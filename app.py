@@ -266,7 +266,7 @@ class LoginRequest(BaseModel):
 def login(payload: LoginRequest):
     conn = get_db()
     user = conn.execute(
-        "SELECT id, username, password_hash, full_name, role, department, email, is_active FROM users WHERE username = ?",
+        "SELECT id, username, password_hash, full_name, role, department, email, is_active, must_change_password FROM users WHERE username = ?",
         (payload.username.strip(),),
     ).fetchone()
     conn.close()
@@ -283,15 +283,51 @@ def login(payload: LoginRequest):
             "role": user["role"],
             "department": user["department"],
             "email": user["email"],
+            "must_change_password": bool(user["must_change_password"]),
         },
     }
+
+
+class ChangePasswordRequest(BaseModel):
+    username: str
+    current_password: str
+    new_password: str
+
+
+@app.post("/api/auth/change-password")
+def change_password(payload: ChangePasswordRequest):
+    new_pw = payload.new_password.strip()
+    if len(new_pw) < 6:
+        raise HTTPException(status_code=400, detail="รหัสผ่านใหม่ต้องมีความยาวอย่างน้อย 6 ตัวอักษร")
+    if new_pw == payload.current_password:
+        raise HTTPException(status_code=400, detail="รหัสผ่านใหม่ต้องไม่ซ้ำกับรหัสผ่านเดิม")
+
+    conn = get_db()
+    user = conn.execute(
+        "SELECT id, username, password_hash FROM users WHERE username = ?",
+        (payload.username.strip(),),
+    ).fetchone()
+    if not user:
+        conn.close()
+        raise HTTPException(status_code=404, detail="ไม่พบผู้ใช้งาน")
+    if user["password_hash"] != hash_password(payload.current_password):
+        conn.close()
+        raise HTTPException(status_code=401, detail="รหัสผ่านปัจจุบันไม่ถูกต้อง")
+
+    conn.execute(
+        "UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?",
+        (hash_password(new_pw), user["id"]),
+    )
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": "เปลี่ยนรหัสผ่านสำเร็จเรียบร้อย"}
 
 
 @app.get("/api/users")
 def list_users(request: Request):
     require_admin(request)
     conn = get_db()
-    rows = conn.execute("SELECT id, username, full_name, role, department, email, is_active, created_at FROM users ORDER BY id ASC").fetchall()
+    rows = conn.execute("SELECT id, username, full_name, role, department, email, is_active, must_change_password, created_at FROM users ORDER BY id ASC").fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -313,8 +349,8 @@ def create_user(request: Request, payload: CreateUserRequest):
     try:
         conn.execute(
             """
-            INSERT INTO users (username, password_hash, full_name, role, department, email, is_active, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+            INSERT INTO users (username, password_hash, full_name, role, department, email, is_active, must_change_password, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)
             """,
             (
                 payload.username.strip(),
@@ -331,7 +367,7 @@ def create_user(request: Request, payload: CreateUserRequest):
         conn.close()
         raise HTTPException(status_code=400, detail=f"ไม่สามารถสร้างผู้ใช้ได้: {e}")
     conn.close()
-    return {"success": True, "message": "เพิ่มผู้ใช้งานสำเร็จ"}
+    return {"success": True, "message": "เพิ่มผู้ใช้งานสำเร็จ (ผู้ใช้จะต้องเปลี่ยนรหัสผ่านเมื่อเข้าสู่ระบบครั้งแรก)"}
 
 
 @app.delete("/api/users/{user_id}")

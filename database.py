@@ -39,10 +39,16 @@ def init_db() -> None:
             department TEXT NOT NULL DEFAULT 'General',
             email TEXT DEFAULT '',
             is_active INTEGER NOT NULL DEFAULT 1,
+            must_change_password INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL
         )
         """
     )
+
+    # Ensure must_change_password column exists for existing databases
+    user_cols = [c["name"] for c in cur.execute("PRAGMA table_info(users)").fetchall()]
+    if "must_change_password" not in user_cols:
+        cur.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 1")
 
     # 2. ISO Master File Documents table
     cur.execute(
@@ -274,14 +280,14 @@ def init_db() -> None:
         for u, pw, fname, role, dept, email in default_users:
             cur.execute(
                 """
-                INSERT INTO users (username, password_hash, full_name, role, department, email, is_active, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                INSERT INTO users (username, password_hash, full_name, role, department, email, is_active, must_change_password, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)
                 """,
                 (u, pw, fname, role, dept, email, now_str),
             )
     else:
         cur.execute(
-            "UPDATE users SET password_hash = ? WHERE username = 'admin'",
+            "UPDATE users SET password_hash = ? WHERE username = 'admin' AND must_change_password = 1",
             (hash_password("Cervelo$3"),),
         )
 

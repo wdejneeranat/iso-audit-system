@@ -16,6 +16,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (saved) {
         try {
             currentUser = JSON.parse(saved);
+            if (currentUser.must_change_password) {
+                openChangePasswordScreen(true, "");
+                return;
+            }
             showMainApp();
             await refreshAllData();
             return;
@@ -28,6 +32,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 function showLoginScreen() {
     document.getElementById("loginScreen").classList.remove("hidden");
+    document.getElementById("forceChangePasswordScreen").classList.add("hidden");
     document.getElementById("appWrapper").classList.add("hidden");
     const errBox = document.getElementById("loginErrorAlert");
     if (errBox) errBox.classList.add("hidden");
@@ -35,9 +40,94 @@ function showLoginScreen() {
 
 function showMainApp() {
     document.getElementById("loginScreen").classList.add("hidden");
+    document.getElementById("forceChangePasswordScreen").classList.add("hidden");
     document.getElementById("appWrapper").classList.remove("hidden");
     applyRolePermissionsUI();
     switchTab("dashboard");
+}
+
+function openChangePasswordScreen(isFirstLogin = true, prefillCurrentPassword = "") {
+    if (!currentUser) return;
+    document.getElementById("loginScreen").classList.add("hidden");
+    document.getElementById("appWrapper").classList.add("hidden");
+    document.getElementById("forceChangePasswordScreen").classList.remove("hidden");
+
+    const subtitle = document.getElementById("forceChangeSubtitle");
+    if (subtitle) {
+        subtitle.textContent = isFirstLogin
+            ? "เพื่อความปลอดภัยของระบบ กรุณาเปลี่ยนรหัสผ่านในการเข้าสู่ระบบครั้งแรกก่อนใช้งาน"
+            : "กำหนดรหัสผ่านใหม่สำหรับบัญชีของคุณ";
+    }
+
+    const errBox = document.getElementById("changePwErrorAlert");
+    if (errBox) errBox.classList.add("hidden");
+
+    document.getElementById("cp_username").value = `${currentUser.username} (${currentUser.full_name})`;
+    document.getElementById("cp_current_password").value = prefillCurrentPassword || "";
+    document.getElementById("cp_new_password").value = "";
+    document.getElementById("cp_confirm_password").value = "";
+}
+
+function cancelChangePassword() {
+    if (!currentUser || currentUser.must_change_password) {
+        handleLogout();
+    } else {
+        showMainApp();
+    }
+}
+
+async function submitForceChangePasswordForm(e) {
+    e.preventDefault();
+    if (!currentUser) return;
+
+    const current_password = document.getElementById("cp_current_password").value;
+    const new_password = document.getElementById("cp_new_password").value.trim();
+    const confirm_password = document.getElementById("cp_confirm_password").value.trim();
+    const errBox = document.getElementById("changePwErrorAlert");
+    const errText = document.getElementById("changePwErrorText");
+
+    if (new_password !== confirm_password) {
+        errText.textContent = "รหัสผ่านใหม่และการยืนยันรหัสผ่านไม่ตรงกัน";
+        errBox.classList.remove("hidden");
+        return;
+    }
+    if (new_password.length < 6) {
+        errText.textContent = "รหัสผ่านใหม่ต้องมีความยาวอย่างน้อย 6 ตัวอักษร";
+        errBox.classList.remove("hidden");
+        return;
+    }
+    if (new_password === current_password) {
+        errText.textContent = "รหัสผ่านใหม่ต้องไม่ซ้ำกับรหัสผ่านเดิม";
+        errBox.classList.remove("hidden");
+        return;
+    }
+
+    try {
+        const res = await fetch("/api/auth/change-password", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                username: currentUser.username,
+                current_password,
+                new_password,
+            }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            errText.textContent = data.detail || "ไม่สามารถเปลี่ยนรหัสผ่านได้";
+            errBox.classList.remove("hidden");
+            return;
+        }
+
+        currentUser.must_change_password = false;
+        sessionStorage.setItem("iso_current_user", JSON.stringify(currentUser));
+        showMainApp();
+        await refreshAllData();
+        showToast("เปลี่ยนรหัสผ่านสำเร็จเรียบร้อย ยินดีต้อนรับเข้าสู่ระบบ");
+    } catch (err) {
+        errText.textContent = "เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์";
+        errBox.classList.remove("hidden");
+    }
 }
 
 function handleLogout() {
@@ -167,6 +257,13 @@ async function submitLoginForm(e) {
         }
         currentUser = data.user;
         sessionStorage.setItem("iso_current_user", JSON.stringify(currentUser));
+
+        // Force password change on first login
+        if (currentUser.must_change_password) {
+            openChangePasswordScreen(true, password);
+            return;
+        }
+
         showMainApp();
         await refreshAllData();
         showToast(`ยินดีต้อนรับ ${currentUser.full_name} (สิทธิ์: ${currentUser.role})`);
