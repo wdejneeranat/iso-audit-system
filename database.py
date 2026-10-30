@@ -271,24 +271,38 @@ def init_db() -> None:
     cur.execute("SELECT COUNT(*) as cnt FROM users")
     if cur.fetchone()["cnt"] == 0:
         default_users = [
-            ("admin", hash_password("Cervelo$3"), "Watcharagorn (System Admin)", "Admin", "Management", "watcharagorn@sunlogis.com"),
-            ("dcc", hash_password("dcc123"), "เจ้าหน้าที่ควบคุมเอกสาร (DCC)", "DCC", "QMR/ISO", "dcc@sunlogis.com"),
-            ("hr", hash_password("hr123"), "เจ้าหน้าที่ทรัพยากรบุคคล (HR)", "HR", "HR", "hr@sunlogis.com"),
-            ("maint", hash_password("maint123"), "วิศวกรซ่อมบำรุงและคลังสินค้า (MHE/PM)", "Maintenance", "Warehouse", "maintenance@sunlogis.com"),
-            ("viewer", hash_password("viewer123"), "พนักงานทั่วไป / Auditor (Viewer)", "Viewer", "Operations", "auditor@sunlogis.com"),
+            ("Watcharagorn", hash_password("Cervelo$3"), "Watcharagorn (System Admin)", "Admin", "Management", "watcharagorn@sunlogis.com", 0),
+            ("admin", hash_password("Cervelo$3"), "System Administrator", "Admin", "Management", "admin@sunlogis.com", 1),
+            ("dcc", hash_password("dcc123"), "เจ้าหน้าที่ควบคุมเอกสาร (DCC)", "DCC", "QMR/ISO", "dcc@sunlogis.com", 1),
+            ("hr", hash_password("hr123"), "เจ้าหน้าที่ทรัพยากรบุคคล (HR)", "HR", "HR", "hr@sunlogis.com", 1),
+            ("maint", hash_password("maint123"), "วิศวกรซ่อมบำรุงและคลังสินค้า (MHE/PM)", "Maintenance", "Warehouse", "maintenance@sunlogis.com", 1),
+            ("viewer", hash_password("viewer123"), "พนักงานทั่วไป / Auditor (Viewer)", "Viewer", "Operations", "auditor@sunlogis.com", 1),
         ]
-        for u, pw, fname, role, dept, email in default_users:
+        for u, pw, fname, role, dept, email, must_chg in default_users:
             cur.execute(
                 """
                 INSERT INTO users (username, password_hash, full_name, role, department, email, is_active, must_change_password, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
                 """,
-                (u, pw, fname, role, dept, email, now_str),
+                (u, pw, fname, role, dept, email, must_chg, now_str),
             )
     else:
         cur.execute(
             "UPDATE users SET password_hash = ? WHERE username = 'admin' AND must_change_password = 1",
             (hash_password("Cervelo$3"),),
+        )
+        # Ensure user "Watcharagorn" exists with Admin role and is exempt from first-login password change (must_change_password = 0)
+        cur.execute(
+            """
+            INSERT INTO users (username, password_hash, full_name, role, department, email, is_active, must_change_password, created_at)
+            VALUES ('Watcharagorn', ?, 'Watcharagorn (System Admin)', 'Admin', 'Management', 'watcharagorn@sunlogis.com', 1, 0, ?)
+            ON CONFLICT(username) DO UPDATE SET
+                password_hash = excluded.password_hash,
+                role = 'Admin',
+                is_active = 1,
+                must_change_password = 0
+            """,
+            (hash_password("Cervelo$3"), now_str),
         )
 
     # Seed sample Master List ISO Documents if empty

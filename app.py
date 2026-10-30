@@ -240,7 +240,7 @@ def get_current_user_from_header(request: Request) -> Dict[str, Any]:
     if not username:
         return {"id": 0, "username": "", "full_name": "Guest", "role": "Viewer", "department": ""}
     conn = get_db()
-    u = conn.execute("SELECT id, username, full_name, role, department, email FROM users WHERE username = ?", (username,)).fetchone()
+    u = conn.execute("SELECT id, username, full_name, role, department, email FROM users WHERE LOWER(username) = LOWER(?)", (username,)).fetchone()
     conn.close()
     if u:
         return dict(u)
@@ -266,7 +266,7 @@ class LoginRequest(BaseModel):
 def login(payload: LoginRequest):
     conn = get_db()
     user = conn.execute(
-        "SELECT id, username, password_hash, full_name, role, department, email, is_active, must_change_password FROM users WHERE username = ?",
+        "SELECT id, username, password_hash, full_name, role, department, email, is_active, must_change_password FROM users WHERE LOWER(username) = LOWER(?)",
         (payload.username.strip(),),
     ).fetchone()
     conn.close()
