@@ -1,5 +1,7 @@
 # SUNLOGIS ISO Audit & Document Control System
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/wdejneeranat/iso-audit-system)
+
 ระบบจัดการและจัดเก็บเอกสารสำหรับการตรวจประเมิน **ISO (Document Control, HR Training & MHE/Rack Preventive Maintenance)** เชื่อมต่อกับ **Synology Drive (QuickConnect: `Sunlogis` / Folder: `ISO`)**
 
 ## คุณสมบัติหลัก (Features)
@@ -13,17 +15,14 @@
 
 ---
 
-## การรันระบบ (Quick Start)
+## การ Deploy ออนไลน์ในคลิกเดียว (1-Click Cloud Deploy)
+คลิกปุ่ม **[Deploy to Render](https://render.com/deploy?repo=https://github.com/wdejneeranat/iso-audit-system)** ด้านบนเพื่อสร้าง Web Application ออนไลน์จาก GitHub Repository นี้ได้ทันที
 
-### 1. รันบนเครื่องคอมพิวเตอร์ (Local / LAN)
+---
+
+## การรันระบบบนเครื่องคอมพิวเตอร์ (Local / LAN)
 ```bash
 pip install -r requirements.txt
 python -m uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 หรือดับเบิลคลิกไฟล์ `start_server.bat` แล้วเปิด `http://localhost:8000`
-
-### 2. รันด้วย Docker
-```bash
-docker compose up -d --build
-```
-เปิดเข้าใช้งานที่ `http://localhost:8085`

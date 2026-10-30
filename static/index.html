@@ -31,6 +31,60 @@
 </head>
 <body class="min-h-screen flex flex-col">
 
+    <!-- ===================================================== -->
+    <!-- FULL-SCREEN LOGIN PAGE (FIRST SCREEN OF THE APP)      -->
+    <!-- ===================================================== -->
+    <div id="loginScreen" class="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 p-4">
+        <div class="bg-white rounded-3xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200/80">
+            <div class="bg-gradient-to-r from-blue-700 to-indigo-800 px-8 py-7 text-white text-center">
+                <div class="w-16 h-16 rounded-2xl bg-white/15 backdrop-blur mx-auto flex items-center justify-center text-3xl shadow-inner mb-3">
+                    <i class="fa-solid fa-shield-halved"></i>
+                </div>
+                <h1 class="text-xl font-bold tracking-wide">SUNLOGIS ISO AUDIT SYSTEM</h1>
+                <p class="text-xs text-blue-100 mt-1">ระบบจัดการเอกสาร Master File, ประวัติฝึกอบรมพนักงาน และแผนซ่อมบำรุง MHE & Rack</p>
+            </div>
+
+            <form onsubmit="submitLoginForm(event)" class="p-8 space-y-5">
+                <div id="loginErrorAlert" class="hidden bg-rose-50 border border-rose-200 text-rose-700 px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center gap-2">
+                    <i class="fa-solid fa-circle-exclamation text-rose-600"></i>
+                    <span id="loginErrorText">ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง</span>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                        <i class="fa-solid fa-user text-blue-600 mr-1"></i> ชื่อผู้ใช้งาน (Username)
+                    </label>
+                    <input type="text" id="login_username" required autofocus placeholder="ระบุชื่อผู้ใช้งาน เช่น admin" class="w-full px-4 py-2.5 text-sm border border-slate-300 rounded-xl focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100 transition" />
+                </div>
+
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                        <i class="fa-solid fa-key text-blue-600 mr-1"></i> รหัสผ่าน (Password)
+                    </label>
+                    <input type="password" id="login_password" required placeholder="ระบุรหัสผ่าน..." class="w-full px-4 py-2.5 text-sm border border-slate-300 rounded-xl focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100 transition" />
+                </div>
+
+                <button type="submit" class="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold shadow-lg shadow-blue-600/25 transition flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-right-to-bracket"></i> เข้าสู่ระบบ (Sign In)
+                </button>
+
+                <div class="pt-4 border-t border-slate-100 text-[11px] text-slate-500 space-y-1">
+                    <div class="font-bold text-slate-700">บัญชีผู้ใช้งานเริ่มต้นในระบบ:</div>
+                    <div>• ผู้ดูแลระบบ (เห็นทุกเมนูรวม Synology & ตั้งค่า): <code>admin</code> / <code>admin123</code></div>
+                    <div>• ควบคุมเอกสาร (DCC): <code>dcc</code> / <code>dcc123</code></div>
+                    <div>• ฝ่ายบุคคล (HR): <code>hr</code> / <code>hr123</code></div>
+                    <div>• ซ่อมบำรุง (Maintenance): <code>maint</code> / <code>maint123</code></div>
+                    <div>• พนักงานทั่วไป (Viewer): <code>viewer</code> / <code>viewer123</code></div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===================================================== -->
+    <!-- MAIN APPLICATION WRAPPER (SHOWN AFTER LOGIN)          -->
+    <!-- ===================================================== -->
+    <div id="appWrapper" class="hidden min-h-screen flex flex-col">
+
     <!-- Top Header Bar -->
     <header class="bg-slate-900 text-white shadow-lg sticky top-0 z-30 no-print">
         <div class="max-w-[1600px] mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
@@ -42,33 +96,30 @@
                     <div class="flex items-center gap-2">
                         <h1 class="text-lg font-bold tracking-wide">SUNLOGIS ISO AUDIT & DOCUMENT CONTROL</h1>
                         <span class="text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-medium">
-                            ISO 9001 / Synology Connected
+                            ISO 9001
                         </span>
                     </div>
-                    <p class="text-xs text-slate-400">ระบบจัดการเอกสาร Master File, ประวัติฝึกอบรมพนักงาน และแผนซ่อมบำรุง MHE & Rack (Synology QuickConnect: Sunlogis / Folder: ISO)</p>
+                    <p class="text-xs text-slate-400">ระบบจัดการเอกสาร Master File, ประวัติฝึกอบรมพนักงาน และแผนซ่อมบำรุง MHE & Rack</p>
                 </div>
             </div>
 
-            <!-- Right Controls: Synology Quick Status + Active User / Role Switcher -->
+            <!-- Right Controls: Synology Quick Status (Admin Only) + Active User + Logout -->
             <div class="flex items-center gap-3 flex-wrap">
-                <div id="synoHeaderBadge" onclick="switchTab('synology')" class="cursor-pointer flex items-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-1.5 rounded-lg text-xs transition">
+                <div id="synoHeaderBadge" onclick="switchTab('synology')" class="admin-only hidden cursor-pointer flex items-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-1.5 rounded-lg text-xs transition">
                     <span id="synoDot" class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
                     <span>Synology: <strong class="text-blue-300">Sunlogis (/DATA/ISO)</strong></span>
                 </div>
 
-                <!-- Quick User/Role Switcher to test Document Access Control (#1) -->
-                <div class="flex items-center gap-2 bg-slate-800 border border-slate-700 px-3 py-1.5 rounded-lg text-xs">
-                    <i class="fa-solid fa-user-lock text-amber-400"></i>
-                    <span class="text-slate-400">ผู้ใช้งานปัจจุบัน:</span>
-                    <select id="userSwitcher" onchange="handleQuickUserSwitch(this.value)" class="bg-slate-900 text-white font-semibold px-2 py-1 rounded border border-slate-600 focus:outline-none">
-                        <option value="admin">admin (Admin - Management)</option>
-                        <option value="dcc">dcc (DCC - QMR/ISO)</option>
-                        <option value="hr">hr (HR - แผนกบุคคล)</option>
-                        <option value="maint">maint (Maintenance - Warehouse)</option>
-                        <option value="viewer">viewer (Viewer - พนักงานทั่วไป)</option>
-                    </select>
-                    <button onclick="openLoginModal()" class="text-blue-400 hover:text-blue-300 ml-1 underline" title="เข้าสู่ระบบด้วยรหัสผ่าน">
-                        สลับบัญชี
+                <div class="flex items-center gap-3 bg-slate-800 border border-slate-700 px-3.5 py-1.5 rounded-xl text-xs">
+                    <div class="flex items-center gap-2">
+                        <i class="fa-solid fa-circle-user text-blue-400 text-base"></i>
+                        <div>
+                            <span id="headerUserFullName" class="font-bold text-white">User</span>
+                            <span id="headerUserRoleBadge" class="ml-1.5 px-2 py-0.5 rounded bg-blue-600/40 text-blue-200 font-semibold border border-blue-500/40">Role</span>
+                        </div>
+                    </div>
+                    <button onclick="handleLogout()" class="bg-rose-600 hover:bg-rose-700 text-white font-semibold px-3 py-1 rounded-lg transition flex items-center gap-1.5">
+                        <i class="fa-solid fa-right-from-bracket"></i> ออกจากระบบ
                     </button>
                 </div>
             </div>
@@ -112,7 +163,8 @@
                     </div>
                 </button>
 
-                <button onclick="switchTab('synology')" id="tabBtn-synology" class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 transition">
+                <!-- Admin-Only Menu 1: Synology Drive (ISO) -->
+                <button onclick="switchTab('synology')" id="tabBtn-synology" class="admin-only hidden w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 transition">
                     <i class="fa-solid fa-server w-5 text-center"></i>
                     <div class="text-left">
                         <div>Synology Drive (ISO)</div>
@@ -120,7 +172,8 @@
                     </div>
                 </button>
 
-                <button onclick="switchTab('settings')" id="tabBtn-settings" class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 transition">
+                <!-- Admin-Only Menu 2: ตั้งค่า SMTP & ผู้ใช้งาน -->
+                <button onclick="switchTab('settings')" id="tabBtn-settings" class="admin-only hidden w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 transition">
                     <i class="fa-solid fa-sliders w-5 text-center"></i>
                     <div class="text-left">
                         <div>ตั้งค่า SMTP & ผู้ใช้งาน</div>
@@ -129,12 +182,12 @@
                 </button>
 
                 <!-- Current Logged-in Role Card -->
-                <div class="mt-6 pt-4 border-t border-slate-100 px-3 py-2 bg-slate-50 rounded-xl">
-                    <div class="text-xs text-slate-500">สิทธิ์การใช้งานขณะนี้:</div>
-                    <div id="sidebarUserName" class="text-sm font-bold text-slate-800 mt-0.5">Watcharagorn (Admin)</div>
-                    <div class="flex items-center gap-1.5 mt-1">
-                        <span id="sidebarUserRole" class="text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-800 font-semibold">Admin</span>
-                        <span id="sidebarUserDept" class="text-xs px-2 py-0.5 rounded bg-slate-200 text-slate-700">Management</span>
+                <div class="mt-6 pt-4 border-t border-slate-100 px-3 py-2.5 bg-slate-50 rounded-xl space-y-2">
+                    <div class="text-xs text-slate-500">ผู้ใช้งานที่เข้าสู่ระบบ:</div>
+                    <div id="sidebarUserName" class="text-sm font-bold text-slate-800">-</div>
+                    <div class="flex items-center gap-1.5">
+                        <span id="sidebarUserRole" class="text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-800 font-semibold">-</span>
+                        <span id="sidebarUserDept" class="text-xs px-2 py-0.5 rounded bg-slate-200 text-slate-700">-</span>
                     </div>
                 </div>
             </div>
@@ -209,7 +262,7 @@
 
                 <!-- Upcoming 30-Day PM Alert Box & Synology Info -->
                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <div class="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+                    <div id="dashboardPmBox" class="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
                         <div class="flex flex-wrap items-center justify-between gap-2 pb-4 border-b border-slate-100">
                             <div>
                                 <h3 class="text-base font-bold text-slate-800 flex items-center gap-2">
@@ -225,13 +278,13 @@
                         <div id="dashboardPmList" class="divide-y divide-slate-100 mt-2"></div>
                     </div>
 
-                    <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 flex flex-col justify-between">
+                    <div id="dashboardSynoCard" class="admin-only hidden bg-white rounded-2xl shadow-sm border border-slate-200 p-5 flex flex-col justify-between">
                         <div>
                             <h3 class="text-base font-bold text-slate-800 flex items-center gap-2">
                                 <i class="fa-solid fa-cloud-arrow-up text-blue-600"></i>
                                 สถานะ Synology Drive Storage
                             </h3>
-                            <p class="text-xs text-slate-500 mt-1">การเชื่อมต่อจัดเก็บเอกสารอัตโนมัติ</p>
+                            <p class="text-xs text-slate-500 mt-1">การเชื่อมต่อจัดเก็บเอกสารอัตโนมัติ (เฉพาะ Admin)</p>
 
                             <div class="mt-4 space-y-2.5 text-sm bg-slate-50 p-4 rounded-xl border border-slate-200">
                                 <div class="flex justify-between">
@@ -1183,33 +1236,7 @@
         </div>
     </div>
 
-    <!-- ===================================================== -->
-    <!-- MODAL 8: LOGIN MODAL                                  -->
-    <!-- ===================================================== -->
-    <div id="loginModal" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-4">
-        <div class="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6 space-y-4">
-            <div class="flex items-center justify-between border-b pb-3">
-                <h3 class="text-base font-bold text-slate-900">เข้าสู่ระบบ (User Authentication)</h3>
-                <button onclick="closeModal('loginModal')" class="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
-            </div>
-            <form onsubmit="submitLoginForm(event)" class="space-y-3 text-sm">
-                <div>
-                    <label class="block text-xs font-bold text-slate-700 mb-1">ชื่อผู้ใช้ (Username)</label>
-                    <input type="text" id="login_username" required placeholder="admin, dcc, hr, maint, viewer" class="w-full px-3 py-2 border rounded-xl" />
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-slate-700 mb-1">รหัสผ่าน (Password)</label>
-                    <input type="password" id="login_password" required placeholder="เช่น admin123" class="w-full px-3 py-2 border rounded-xl" />
-                </div>
-                <div class="text-[11px] text-slate-500 bg-slate-50 p-2.5 rounded-lg">
-                    บัญชีทดสอบ: <code>admin/admin123</code>, <code>dcc/dcc123</code>, <code>hr/hr123</code>, <code>maint/maint123</code>, <code>viewer/viewer123</code>
-                </div>
-                <div class="flex justify-end gap-2 pt-2">
-                    <button type="submit" class="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold">เข้าสู่ระบบ</button>
-                </div>
-            </form>
-        </div>
-    </div>
+    </div> <!-- End of #appWrapper -->
 
     <script src="/static/app.js"></script>
 </body>

@@ -236,13 +236,22 @@ def can_user_access_doc(user: Dict[str, Any], doc_row: sqlite3.Row) -> bool:
 
 
 def get_current_user_from_header(request: Request) -> Dict[str, Any]:
-    username = request.headers.get("X-Username", "admin")
+    username = request.headers.get("X-Username", "")
+    if not username:
+        return {"id": 0, "username": "", "full_name": "Guest", "role": "Viewer", "department": ""}
     conn = get_db()
     u = conn.execute("SELECT id, username, full_name, role, department, email FROM users WHERE username = ?", (username,)).fetchone()
     conn.close()
     if u:
         return dict(u)
-    return {"id": 1, "username": "admin", "full_name": "Admin", "role": "Admin", "department": "Management"}
+    return {"id": 0, "username": "", "full_name": "Guest", "role": "Viewer", "department": ""}
+
+
+def require_admin(request: Request) -> Dict[str, Any]:
+    user = get_current_user_from_header(request)
+    if user.get("role") != "Admin":
+        raise HTTPException(status_code=403, detail="เฉพาะผู้ดูแลระบบ (Admin) เท่านั้นที่มีสิทธิ์เข้าถึงส่วนนี้")
+    return user
 
 
 # ==========================================
@@ -279,7 +288,8 @@ def login(payload: LoginRequest):
 
 
 @app.get("/api/users")
-def list_users():
+def list_users(request: Request):
+    require_admin(request)
     conn = get_db()
     rows = conn.execute("SELECT id, username, full_name, role, department, email, is_active, created_at FROM users ORDER BY id ASC").fetchall()
     conn.close()
@@ -296,7 +306,8 @@ class CreateUserRequest(BaseModel):
 
 
 @app.post("/api/users")
-def create_user(payload: CreateUserRequest):
+def create_user(request: Request, payload: CreateUserRequest):
+    require_admin(request)
     conn = get_db()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
@@ -324,7 +335,8 @@ def create_user(payload: CreateUserRequest):
 
 
 @app.delete("/api/users/{user_id}")
-def delete_user(user_id: int):
+def delete_user(user_id: int, request: Request):
+    require_admin(request)
     if user_id == 1:
         raise HTTPException(status_code=400, detail="ไม่สามารถลบบัญชี Admin หลักได้")
     conn = get_db()
@@ -1204,16 +1216,18 @@ def get_email_logs():
 
 
 # ==========================================
-# 6. Synology Drive Status, Explorer & Settings
+# 6. Synology Drive Status, Explorer & Settings (Admin Only)
 # ==========================================
 @app.get("/api/synology/status")
-def synology_status(subfolder: str = Query("")):
+def synology_status(request: Request, subfolder: str = Query("")):
+    require_admin(request)
     syno = get_synology_client()
     return syno.list_remote_files(subfolder=subfolder)
 
 
 @app.post("/api/synology/sync-all")
-def sync_all_to_synology():
+def sync_all_to_synology(request: Request):
+    require_admin(request)
     syno = get_synology_client()
     conn = get_db()
     synced_count = 0
@@ -1275,18 +1289,21 @@ def sync_all_to_synology():
 
 
 @app.get("/api/settings")
-def get_settings():
+def get_settings(request: Request):
+    require_admin(request)
     return get_settings_dict()
 
 
 @app.post("/api/settings")
-def save_settings(payload: Dict[str, str]):
+def save_settings(request: Request, payload: Dict[str, str]):
+    require_admin(request)
     update_settings_dict(payload)
     return {"success": True, "message": "บันทึกการตั้งค่าระบบเรียบร้อย"}
 
 
 @app.post("/api/settings/test-email")
-def test_email_endpoint(recipient: str = Query(...)):
+def test_email_endpoint(request: Request, recipient: str = Query(...)):
+    require_admin(request)
     ok, msg = send_smtp_email(
         recipient,
         "[ISO Audit System] ทดสอบการส่งอีเมลแจ้งเตือนแผนซ่อมบำรุง (PM 30-Day Alert)",

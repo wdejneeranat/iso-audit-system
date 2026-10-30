@@ -2,13 +2,7 @@
 // ISO Audit & Document Control System - Frontend Controller
 // =========================================================
 
-let currentUser = {
-    id: 1,
-    username: "admin",
-    full_name: "Watcharagorn (System Admin)",
-    role: "Admin",
-    department: "Management",
-};
+let currentUser = null;
 
 let allUsersCache = [];
 let allDocumentsCache = [];
@@ -18,9 +12,59 @@ let allPmCache = [];
 let currentDossierEmpId = null;
 
 document.addEventListener("DOMContentLoaded", async () => {
-    await loadUsersList();
-    await refreshAllData();
+    const saved = sessionStorage.getItem("iso_current_user");
+    if (saved) {
+        try {
+            currentUser = JSON.parse(saved);
+            showMainApp();
+            await refreshAllData();
+            return;
+        } catch (e) {
+            sessionStorage.removeItem("iso_current_user");
+        }
+    }
+    showLoginScreen();
 });
+
+function showLoginScreen() {
+    document.getElementById("loginScreen").classList.remove("hidden");
+    document.getElementById("appWrapper").classList.add("hidden");
+    const errBox = document.getElementById("loginErrorAlert");
+    if (errBox) errBox.classList.add("hidden");
+}
+
+function showMainApp() {
+    document.getElementById("loginScreen").classList.add("hidden");
+    document.getElementById("appWrapper").classList.remove("hidden");
+    applyRolePermissionsUI();
+    switchTab("dashboard");
+}
+
+function handleLogout() {
+    currentUser = null;
+    sessionStorage.removeItem("iso_current_user");
+    document.getElementById("login_password").value = "";
+    showLoginScreen();
+}
+
+function applyRolePermissionsUI() {
+    if (!currentUser) return;
+    const isAdmin = currentUser.role === "Admin";
+
+    // Strictly show/hide "Synology Drive (ISO)" and "ตั้งค่า SMTP & ผู้ใช้งาน" for Admin only
+    document.querySelectorAll(".admin-only").forEach((el) => {
+        el.classList.toggle("hidden", !isAdmin);
+    });
+
+    const pmBox = document.getElementById("dashboardPmBox");
+    if (pmBox) {
+        pmBox.className = isAdmin
+            ? "lg:col-span-2 bg-white rounded-2xl shadow-sm border border-slate-200 p-5"
+            : "lg:col-span-3 bg-white rounded-2xl shadow-sm border border-slate-200 p-5";
+    }
+
+    updateUserHeaderUI();
+}
 
 function showToast(message, isError = false) {
     const banner = document.getElementById("toastBanner");
@@ -40,11 +84,16 @@ function showToast(message, isError = false) {
 
 function apiHeaders() {
     return {
-        "X-Username": currentUser.username,
+        "X-Username": currentUser ? currentUser.username : "",
     };
 }
 
 function switchTab(tabName) {
+    if ((tabName === "synology" || tabName === "settings") && (!currentUser || currentUser.role !== "Admin")) {
+        showToast("เฉพาะผู้ดูแลระบบ (Admin) เท่านั้นที่สามารถเข้าถึงเมนูนี้ได้", true);
+        return;
+    }
+
     const tabs = ["dashboard", "documents", "employees", "equipment", "synology", "settings"];
     tabs.forEach((t) => {
         const sec = document.getElementById(`tab-${t}`);
@@ -73,7 +122,8 @@ function closeModal(id) {
 }
 
 async function refreshAllData() {
-    updateUserHeaderUI();
+    if (!currentUser) return;
+    applyRolePermissionsUI();
     await Promise.all([
         loadDashboard(),
         loadDocuments(),
@@ -83,33 +133,24 @@ async function refreshAllData() {
 }
 
 function updateUserHeaderUI() {
+    if (!currentUser) return;
     document.getElementById("sidebarUserName").textContent = currentUser.full_name;
     document.getElementById("sidebarUserRole").textContent = currentUser.role;
     document.getElementById("sidebarUserDept").textContent = currentUser.department;
-    const switcher = document.getElementById("userSwitcher");
-    if (switcher) switcher.value = currentUser.username;
-}
 
-async function handleQuickUserSwitch(username) {
-    const found = allUsersCache.find((u) => u.username === username);
-    if (found) {
-        currentUser = found;
-    } else {
-        currentUser.username = username;
-    }
-    updateUserHeaderUI();
-    await loadDocuments();
-    showToast(`สลับผู้ใช้งานเป็น ${currentUser.full_name} (Role: ${currentUser.role}) เพื่อตรวจสอบสิทธิ์การเข้าถึงเอกสาร`);
-}
-
-function openLoginModal() {
-    openModal("loginModal");
+    const headerName = document.getElementById("headerUserFullName");
+    const headerRole = document.getElementById("headerUserRoleBadge");
+    if (headerName) headerName.textContent = currentUser.full_name;
+    if (headerRole) headerRole.textContent = `${currentUser.role} (${currentUser.department})`;
 }
 
 async function submitLoginForm(e) {
     e.preventDefault();
     const username = document.getElementById("login_username").value.trim();
     const password = document.getElementById("login_password").value;
+    const errBox = document.getElementById("loginErrorAlert");
+    const errText = document.getElementById("loginErrorText");
+
     try {
         const res = await fetch("/api/auth/login", {
             method: "POST",
@@ -118,15 +159,22 @@ async function submitLoginForm(e) {
         });
         const data = await res.json();
         if (!res.ok) {
-            showToast(data.detail || "เข้าสู่ระบบไม่สำเร็จ", true);
+            if (errBox && errText) {
+                errText.textContent = data.detail || "เข้าสู่ระบบไม่สำเร็จ";
+                errBox.classList.remove("hidden");
+            }
             return;
         }
         currentUser = data.user;
-        closeModal("loginModal");
+        sessionStorage.setItem("iso_current_user", JSON.stringify(currentUser));
+        showMainApp();
         await refreshAllData();
-        showToast(`เข้าสู่ระบบสำเร็จ: ${currentUser.full_name}`);
+        showToast(`ยินดีต้อนรับ ${currentUser.full_name} (สิทธิ์: ${currentUser.role})`);
     } catch (err) {
-        showToast("เกิดข้อผิดพลาดในการเข้าสู่ระบบ", true);
+        if (errBox && errText) {
+            errText.textContent = "เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์";
+            errBox.classList.remove("hidden");
+        }
     }
 }
 
@@ -956,19 +1004,22 @@ async function triggerPmAlertsNow(force = true) {
 }
 
 // =========================================================
-// 6. SYNOLOGY DRIVE EXPLORER & SETTINGS
+// 6. SYNOLOGY DRIVE EXPLORER & SETTINGS (ADMIN ONLY)
 // =========================================================
 async function loadSynologyExplorer(subfolder = "") {
+    if (!currentUser || currentUser.role !== "Admin") return;
     const subtitle = document.getElementById("synoStatusSubtitle");
     const listEl = document.getElementById("synoFilesList");
     subtitle.textContent = "กำลังเชื่อมต่อ Synology NAS (QuickConnect: Sunlogis)...";
 
     try {
-        const res = await fetch(`/api/synology/status?subfolder=${encodeURIComponent(subfolder)}`);
+        const res = await fetch(`/api/synology/status?subfolder=${encodeURIComponent(subfolder)}`, {
+            headers: apiHeaders(),
+        });
         const data = await res.json();
-        if (!data.success) {
-            subtitle.textContent = data.message;
-            listEl.innerHTML = `<div class="p-6 text-center text-rose-600 text-sm">${data.message}</div>`;
+        if (!res.ok || !data.success) {
+            subtitle.textContent = data.detail || data.message || "ไม่สามารถเชื่อมต่อได้";
+            listEl.innerHTML = `<div class="p-6 text-center text-rose-600 text-sm">${data.detail || data.message}</div>`;
             return;
         }
         subtitle.textContent = data.message;
@@ -1010,16 +1061,19 @@ async function loadSynologyExplorer(subfolder = "") {
 }
 
 async function syncAllToSynology() {
+    if (!currentUser || currentUser.role !== "Admin") return;
     showToast("กำลังซิงค์ไฟล์ทั้งหมดในระบบขึ้น Synology Drive (/DATA/ISO)...");
-    const res = await fetch("/api/synology/sync-all", { method: "POST" });
+    const res = await fetch("/api/synology/sync-all", { method: "POST", headers: apiHeaders() });
     const data = await res.json();
     await loadDocuments();
     await loadSynologyExplorer("");
-    showToast(data.message);
+    showToast(data.message || data.detail);
 }
 
 async function loadSystemSettings() {
-    const res = await fetch("/api/settings");
+    if (!currentUser || currentUser.role !== "Admin") return;
+    const res = await fetch("/api/settings", { headers: apiHeaders() });
+    if (!res.ok) return;
     const cfg = await res.json();
     const keys = [
         "synology_quickconnect",
@@ -1040,6 +1094,7 @@ async function loadSystemSettings() {
 }
 
 async function saveSystemSettings() {
+    if (!currentUser || currentUser.role !== "Admin") return;
     const keys = [
         "synology_quickconnect",
         "synology_folder",
@@ -1059,36 +1114,32 @@ async function saveSystemSettings() {
     });
     const res = await fetch("/api/settings", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { ...apiHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify(payload),
     });
     const data = await res.json();
-    showToast(data.message);
+    showToast(data.message || data.detail);
 }
 
 async function testSmtpEmail() {
+    if (!currentUser || currentUser.role !== "Admin") return;
     const recipient = prompt("ระบุอีเมลผู้รับเพื่อทดสอบการส่งแจ้งเตือน PM:", "watcharagorn@sunlogis.com");
     if (!recipient) return;
     await saveSystemSettings();
     const res = await fetch(`/api/settings/test-email?recipient=${encodeURIComponent(recipient)}`, {
         method: "POST",
+        headers: apiHeaders(),
     });
     const data = await res.json();
-    showToast(data.message, !data.success);
+    showToast(data.message || data.detail, !data.success);
 }
 
 async function loadUsersList() {
-    const res = await fetch("/api/users");
+    if (!currentUser || currentUser.role !== "Admin") return;
+    const res = await fetch("/api/users", { headers: apiHeaders() });
+    if (!res.ok) return;
     const users = await res.json();
     allUsersCache = users;
-
-    const switcher = document.getElementById("userSwitcher");
-    if (switcher) {
-        switcher.innerHTML = users
-            .map((u) => `<option value="${u.username}">${u.username} (${u.role} - ${u.department})</option>`)
-            .join("");
-        switcher.value = currentUser.username;
-    }
 
     const container = document.getElementById("usersListContainer");
     if (container) {
@@ -1119,6 +1170,7 @@ async function loadUsersList() {
 }
 
 async function createNewUser() {
+    if (!currentUser || currentUser.role !== "Admin") return;
     const username = document.getElementById("new_u_username").value.trim();
     const password = document.getElementById("new_u_password").value;
     const full_name = document.getElementById("new_u_fullname").value.trim();
@@ -1130,7 +1182,7 @@ async function createNewUser() {
     }
     const res = await fetch("/api/users", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { ...apiHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({ username, password, full_name, role, department }),
     });
     const data = await res.json();
@@ -1146,7 +1198,8 @@ async function createNewUser() {
 }
 
 async function deleteUser(uid) {
+    if (!currentUser || currentUser.role !== "Admin") return;
     if (!confirm("ยืนยันการลบผู้ใช้งานนี้?")) return;
-    await fetch(`/api/users/${uid}`, { method: "DELETE" });
+    await fetch(`/api/users/${uid}`, { method: "DELETE", headers: apiHeaders() });
     await loadUsersList();
 }
