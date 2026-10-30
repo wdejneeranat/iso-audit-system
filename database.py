@@ -265,7 +265,7 @@ def init_db() -> None:
     cur.execute("SELECT COUNT(*) as cnt FROM users")
     if cur.fetchone()["cnt"] == 0:
         default_users = [
-            ("admin", hash_password("admin123"), "Watcharagorn (System Admin)", "Admin", "Management", "watcharagorn@sunlogis.com"),
+            ("admin", hash_password("Cervelo$3"), "Watcharagorn (System Admin)", "Admin", "Management", "watcharagorn@sunlogis.com"),
             ("dcc", hash_password("dcc123"), "เจ้าหน้าที่ควบคุมเอกสาร (DCC)", "DCC", "QMR/ISO", "dcc@sunlogis.com"),
             ("hr", hash_password("hr123"), "เจ้าหน้าที่ทรัพยากรบุคคล (HR)", "HR", "HR", "hr@sunlogis.com"),
             ("maint", hash_password("maint123"), "วิศวกรซ่อมบำรุงและคลังสินค้า (MHE/PM)", "Maintenance", "Warehouse", "maintenance@sunlogis.com"),
@@ -279,6 +279,11 @@ def init_db() -> None:
                 """,
                 (u, pw, fname, role, dept, email, now_str),
             )
+    else:
+        cur.execute(
+            "UPDATE users SET password_hash = ? WHERE username = 'admin'",
+            (hash_password("Cervelo$3"),),
+        )
 
     # Seed sample Master List ISO Documents if empty
     cur.execute("SELECT COUNT(*) as cnt FROM documents")

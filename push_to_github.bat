@@ -1,27 +1,25 @@
 @echo off
 chcp 65001 >nul
 echo ======================================================================
-echo   Push SUNLOGIS ISO Audit System to GitHub
+echo   Update & Push SUNLOGIS ISO Audit System to GitHub
+echo   Repository: https://github.com/wdejneeranat/iso-audit-system.git
 echo ======================================================================
 echo.
-set /p REPO_URL="กรุณาวาง URL ของ GitHub Repository (เช่น https://github.com/yourname/iso-audit-system.git): "
 
-if "%REPO_URL%"=="" (
-    echo [ERROR] กรุณาระบุ GitHub Repository URL
-    pause
-    exit /b 1
+set /p COMMIT_MSG="ระบุข้อความการอัปเดต (กด Enter เพื่อใช้ค่าเริ่มต้น 'Update ISO Audit System'): "
+if "%COMMIT_MSG%"=="" set COMMIT_MSG=Update ISO Audit System (%date% %time%)
+
+git remote get-url origin >nul 2>&1
+if errorlevel 1 (
+    git remote add origin https://github.com/wdejneeranat/iso-audit-system.git
 )
 
-git init
-git branch -M main
 git add .
-git commit -m "Initial commit: SUNLOGIS ISO Audit & Document Control System"
-git remote remove origin >nul 2>&1
-git remote add origin %REPO_URL%
+git commit -m "%COMMIT_MSG%"
 git push -u origin main
 
 echo.
 echo ======================================================================
-echo   อัปโหลดโปรเจกต์ขึ้น GitHub สำเร็จเรียบร้อย!
+echo   อัปเดตโค้ดขึ้น GitHub สำเร็จเรียบร้อย!
 echo ======================================================================
 pause
