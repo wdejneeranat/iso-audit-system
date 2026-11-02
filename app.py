@@ -1351,6 +1351,19 @@ def list_vendors(
     grade: str = Query(""),
 ):
     conn = get_db()
+    try:
+        cnt = conn.execute("SELECT COUNT(*) as c FROM vendors").fetchone()["c"]
+        if cnt == 0:
+            conn.close()
+            init_db()
+            bootstrap_sample_files_and_synology()
+            conn = get_db()
+    except Exception:
+        conn.close()
+        init_db()
+        bootstrap_sample_files_and_synology()
+        conn = get_db()
+
     sql = "SELECT * FROM vendors WHERE 1=1"
     params: List[Any] = []
     if q.strip():
@@ -1964,8 +1977,30 @@ def dashboard_summary():
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+@app.middleware("http")
+async def disable_static_cache(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/") or request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 @app.get("/", response_class=HTMLResponse)
 def serve_index():
     index_path = os.path.join(STATIC_DIR, "index.html")
     with open(index_path, "r", encoding="utf-8") as f:
-        return f.read()
+        html = f.read()
+    v_info = get_app_version()
+    ver = v_info.get("version", "1.2")
+    ts = int(datetime.now().timestamp())
+    html = re.sub(r'/static/app\.js(\?[^"\']*)?', f"/static/app.js?v={ver}&t={ts}", html)
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )

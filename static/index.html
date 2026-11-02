@@ -38,7 +38,7 @@
         <!-- Version Badge at Top-Right Corner of Login Screen -->
         <div class="fixed top-4 right-4 z-50 bg-slate-900/90 text-emerald-300 border border-emerald-500/40 px-3.5 py-1.5 rounded-full text-xs font-bold shadow-lg backdrop-blur flex items-center gap-1.5">
             <i class="fa-solid fa-code-branch text-emerald-400"></i>
-            <span class="app-version-label">Version 1.1</span>
+            <span class="app-version-label">Version 1.2</span>
         </div>
         <div class="bg-white rounded-3xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200/80">
             <div class="bg-gradient-to-r from-blue-700 to-indigo-800 px-8 py-7 text-white text-center">
@@ -183,7 +183,7 @@
                 <!-- Version Badge at Top-Right Corner of Main App Header -->
                 <div class="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-3 py-1.5 rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5" title="System Version (Auto-incremented on GitHub push)">
                     <i class="fa-solid fa-code-branch text-emerald-400"></i>
-                    <span class="app-version-label">Version 1.1</span>
+                    <span class="app-version-label">Version 1.2</span>
                 </div>
             </div>
         </div>
@@ -1776,6 +1776,32 @@
 
     </div> <!-- End of #appWrapper -->
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=1.2"></script>
+    <script>
+        // Ensure switchTab always includes the 'avl' module even if browser cached an older script
+        window.switchTab = function(tabName) {
+            if ((tabName === "synology" || tabName === "settings") && (!window.currentUser && typeof currentUser !== "undefined" && (!currentUser || currentUser.role !== "Admin"))) {
+                if (typeof showToast === "function") showToast("เฉพาะผู้ดูแลระบบ (Admin) เท่านั้นที่สามารถเข้าถึงเมนูนี้ได้", true);
+                return;
+            }
+            const tabs = ["dashboard", "documents", "employees", "equipment", "avl", "synology", "settings"];
+            tabs.forEach((t) => {
+                const sec = document.getElementById(`tab-${t}`);
+                const btn = document.getElementById(`tabBtn-${t}`);
+                if (sec) sec.classList.toggle("hidden", t !== tabName);
+                if (btn) btn.classList.toggle("nav-active", t === tabName);
+            });
+            if (tabName === "dashboard" && typeof loadDashboard === "function") loadDashboard();
+            if (tabName === "documents" && typeof loadDocuments === "function") loadDocuments();
+            if (tabName === "employees" && typeof loadEmployees === "function") loadEmployees();
+            if (tabName === "equipment" && typeof loadEquipmentAndPm === "function") loadEquipmentAndPm();
+            if (tabName === "avl" && typeof loadAvlData === "function") loadAvlData();
+            if (tabName === "synology" && typeof loadSynologyExplorer === "function") loadSynologyExplorer("");
+            if (tabName === "settings") {
+                if (typeof loadSystemSettings === "function") loadSystemSettings();
+                if (typeof loadUsersList === "function") loadUsersList();
+            }
+        };
+    </script>
 </body>
 </html>
