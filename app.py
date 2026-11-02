@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from database import init_db, get_db, hash_password, get_settings_dict, update_settings_dict
 from synology_client import SynologyClient
-from email_service import check_and_send_pm_notifications, send_smtp_email
+from email_service import check_and_send_pm_notifications, check_and_send_avl_notifications, send_smtp_email
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STORAGE_DIR = os.path.join(BASE_DIR, "storage")
@@ -173,16 +173,52 @@ def bootstrap_sample_files_and_synology():
                 (fname, up_res["local_path"], up_res["synology_path"], 1 if up_res["synology_synced"] else 0, p["id"]),
             )
 
+    # Also bootstrap sample Vendor Certificates & Evaluation Evidence PDFs
+    vends = conn.execute("SELECT id, vendor_code, vendor_name, cert_filename, local_cert_path FROM vendors").fetchall()
+    for v in vends:
+        if not v["cert_filename"] or not v["local_cert_path"] or not os.path.exists(v["local_cert_path"]):
+            fname = f"{v['vendor_code']}_Certificate.pdf"
+            local_p = os.path.join(STORAGE_DIR, "ISO", "AVL_Vendors", v["vendor_code"], fname)
+            create_minimal_pdf(local_p, f"AVL Vendor Certificate: {v['vendor_code']}", f"Vendor: {v['vendor_name']}")
+            up_res = syno.upload_file(local_p, f"AVL_Vendors/{v['vendor_code']}", fname)
+            conn.execute(
+                """
+                UPDATE vendors
+                SET cert_filename = ?, local_cert_path = ?, synology_cert_path = ?
+                WHERE id = ?
+                """,
+                (fname, up_res["local_path"], up_res["synology_path"], v["id"]),
+            )
+
+    vevals = conn.execute(
+        "SELECT ve.id, ve.eval_code, ve.status, ve.evidence_filename, ve.local_evidence_path, v.vendor_code FROM vendor_evaluations ve JOIN vendors v ON ve.vendor_id = v.id WHERE ve.status = 'Completed'"
+    ).fetchall()
+    for ve in vevals:
+        if not ve["evidence_filename"] or not ve["local_evidence_path"] or not os.path.exists(ve["local_evidence_path"]):
+            fname = f"{ve['vendor_code']}_{ve['eval_code']}_EvalReport.pdf"
+            local_p = os.path.join(STORAGE_DIR, "ISO", "AVL_Vendors", ve["vendor_code"], "Evaluations", fname)
+            create_minimal_pdf(local_p, f"Supplier Evaluation Report: {ve['eval_code']}", f"Vendor: {ve['vendor_code']} - Section 3.2 & 3.3")
+            up_res = syno.upload_file(local_p, f"AVL_Vendors/{ve['vendor_code']}/Evaluations", fname)
+            conn.execute(
+                """
+                UPDATE vendor_evaluations
+                SET evidence_filename = ?, local_evidence_path = ?, synology_evidence_path = ?
+                WHERE id = ?
+                """,
+                (fname, up_res["local_path"], up_res["synology_path"], ve["id"]),
+            )
+
     conn.commit()
     conn.close()
 
 
 async def periodic_pm_alert_scheduler():
-    """Background task that checks 30-day advance PM notifications automatically."""
+    """Background task that checks 30-day advance PM & AVL notifications automatically."""
     await asyncio.sleep(2)
     while True:
         try:
             check_and_send_pm_notifications(force_resend=False)
+            check_and_send_avl_notifications(force_resend=False)
         except Exception:
             pass
         await asyncio.sleep(3600 * 6)  # Check every 6 hours
@@ -1243,6 +1279,510 @@ def trigger_pm_alerts_now(force: bool = Query(False)):
     return result
 
 
+# ==========================================
+# 8. Approved Vendor List (AVL) & Supplier Evaluation (Manual Sec 3.2 & 3.3)
+# ==========================================
+def calculate_avl_grade_and_action(
+    score_quality: float,
+    score_service_sla: float,
+    score_cost: float,
+    score_cooperation: float,
+) -> Dict[str, Any]:
+    """
+    Calculate Supplier Evaluation total score, pass criteria flag (Section 3.2),
+    and Grade + Review Action (Section 3.3 of the Manual).
+    """
+    sq = max(0.0, min(35.0, float(score_quality or 0.0)))
+    ss = max(0.0, min(30.0, float(score_service_sla or 0.0)))
+    sc = max(0.0, min(20.0, float(score_cost or 0.0)))
+    sco = max(0.0, min(15.0, float(score_cooperation or 0.0)))
+    total = round(sq + ss + sc + sco, 2)
+
+    # Section 3.2 minimum expectations:
+    # Criterion 1 (Quality 35%) >= 28%
+    # Criterion 2 (After-Sales & SLA 30%) >= 24%
+    # Total >= 80%
+    pass_flag = 1 if (sq >= 28.0 and ss >= 24.0 and total >= 80.0) else 0
+
+    if total >= 90.0:
+        grade = "A"
+        action = "ระดับ A (90-100%): คุณภาพดีเยี่ยม คงสถานะพันธมิตรหลักและให้สิทธิพิเศษพิจารณาเป็นเจ้าแรกในการประมูลรอบถัดไป"
+        recommended_status = "Approved"
+    elif total >= 80.0:
+        grade = "B"
+        action = "ระดับ B (80-89%): คุณภาพอยู่ในเกณฑ์มาตรฐาน แจ้ง Feedback ถึงจุดที่สามารถพัฒนาต่อได้"
+        recommended_status = "Approved"
+    elif total >= 70.0:
+        grade = "C"
+        action = "ระดับ C (70-79%): ต้องออกเอกสารแจ้งเตือน (Corrective Action Request - CAR) ให้ผู้จัดจำหน่ายทำแผนแก้ไขและปรับปรุงปัญหาภายใน 30-60 วัน"
+        recommended_status = "Conditional (CAR)"
+    else:
+        grade = "D"
+        action = "ระดับ D (ต่ำกว่า 70%): ระงับการสั่งซื้อใหม่ชั่วคราว หากไม่มีการปรับปรุงตามกำหนดให้พิจารณาถอดชื่อออกจากรายชื่อผู้ค้า (Remove from AVL)"
+        recommended_status = "Suspended / Removed"
+
+    # Note if total >= 80 but sub-criterion (<28% or <24%) missed
+    warnings = []
+    if sq < 28.0:
+        warnings.append(f"คะแนนข้อ 1 คุณภาพสินค้า/งานติดตั้ง ({sq}%) ต่ำกว่าเกณฑ์ขั้นต่ำที่คาดหวัง (28%)")
+    if ss < 24.0:
+        warnings.append(f"คะแนนข้อ 2 บริการหลังการขาย & SLA ({ss}%) ต่ำกว่าเกณฑ์ขั้นต่ำที่คาดหวัง (24%)")
+    if warnings and total >= 80.0:
+        action += " [หมายเหตุ: " + "; ".join(warnings) + " ควรแจ้งประเด็นให้ปรับปรุง]"
+
+    return {
+        "score_quality": sq,
+        "score_service_sla": ss,
+        "score_cost": sc,
+        "score_cooperation": sco,
+        "total_score": total,
+        "pass_criteria_flag": pass_flag,
+        "grade": grade,
+        "review_action": action,
+        "recommended_status": recommended_status,
+    }
+
+
+@app.get("/api/vendors")
+def list_vendors(
+    q: str = Query(""),
+    category: str = Query(""),
+    avl_status: str = Query(""),
+    grade: str = Query(""),
+):
+    conn = get_db()
+    sql = "SELECT * FROM vendors WHERE 1=1"
+    params: List[Any] = []
+    if q.strip():
+        kw = f"%{q.strip()}%"
+        sql += " AND (vendor_code LIKE ? OR vendor_name LIKE ? OR products_services LIKE ? OR contact_person LIKE ?)"
+        params.extend([kw, kw, kw, kw])
+    if category.strip():
+        sql += " AND category = ?"
+        params.append(category.strip())
+    if avl_status.strip():
+        sql += " AND avl_status = ?"
+        params.append(avl_status.strip())
+    if grade.strip():
+        sql += " AND latest_grade = ?"
+        params.append(grade.strip())
+    sql += " ORDER BY vendor_code ASC"
+    rows = conn.execute(sql, params).fetchall()
+
+    results = []
+    for r in rows:
+        d = dict(r)
+        evals = conn.execute(
+            "SELECT * FROM vendor_evaluations WHERE vendor_id = ? ORDER BY planned_date DESC, id DESC",
+            (r["id"],),
+        ).fetchall()
+        d["evaluations"] = [dict(ev) for ev in evals]
+        results.append(d)
+    conn.close()
+    return results
+
+
+@app.post("/api/vendors")
+async def save_vendor(
+    vendor_id: Optional[int] = Form(None),
+    vendor_code: str = Form(...),
+    vendor_name: str = Form(...),
+    category: str = Form("MHE & Storage Systems"),
+    products_services: str = Form(""),
+    contact_person: str = Form(""),
+    phone: str = Form(""),
+    email: str = Form(""),
+    address: str = Form(""),
+    tax_id: str = Form(""),
+    iso_certified: str = Form(""),
+    avl_status: str = Form("Approved"),
+    next_eval_date: str = Form(""),
+    notes: str = Form(""),
+    cert_file: Optional[UploadFile] = File(None),
+):
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    clean_code = vendor_code.strip().upper()
+    conn = get_db()
+
+    existing = None
+    if vendor_id:
+        existing = conn.execute("SELECT * FROM vendors WHERE id = ?", (vendor_id,)).fetchone()
+    else:
+        existing = conn.execute("SELECT * FROM vendors WHERE vendor_code = ?", (clean_code,)).fetchone()
+
+    cert_fname = existing["cert_filename"] if existing else ""
+    cert_local = existing["local_cert_path"] if existing else ""
+    cert_syno = existing["synology_cert_path"] if existing else ""
+    msg = "บันทึกข้อมูลผู้จัดจำหน่าย (Approved Vendor List - AVL) สำเร็จ"
+
+    if cert_file and cert_file.filename:
+        _, ext = os.path.splitext(cert_file.filename)
+        ext = ext.lower() or ".pdf"
+        cert_fname = f"{clean_code}_Certificate{ext}"
+        local_dir = os.path.join(STORAGE_DIR, "ISO", "AVL_Vendors", clean_code)
+        os.makedirs(local_dir, exist_ok=True)
+        cert_local = os.path.join(local_dir, cert_fname)
+        with open(cert_local, "wb") as f_out:
+            f_out.write(await cert_file.read())
+
+        syno = get_synology_client()
+        up_res = syno.upload_file(cert_local, f"AVL_Vendors/{clean_code}", cert_fname)
+        cert_syno = up_res["synology_path"]
+        msg = up_res["message"]
+
+    if existing:
+        target_id = existing["id"]
+        conn.execute(
+            """
+            UPDATE vendors
+            SET vendor_code = ?, vendor_name = ?, category = ?, products_services = ?,
+                contact_person = ?, phone = ?, email = ?, address = ?, tax_id = ?,
+                iso_certified = ?, avl_status = ?, next_eval_date = ?,
+                cert_filename = ?, local_cert_path = ?, synology_cert_path = ?, notes = ?
+            WHERE id = ?
+            """,
+            (
+                clean_code,
+                vendor_name.strip(),
+                category.strip(),
+                products_services.strip(),
+                contact_person.strip(),
+                phone.strip(),
+                email.strip(),
+                address.strip(),
+                tax_id.strip(),
+                iso_certified.strip(),
+                avl_status.strip(),
+                next_eval_date.strip(),
+                cert_fname,
+                cert_local,
+                cert_syno,
+                notes.strip(),
+                target_id,
+            ),
+        )
+    else:
+        cur = conn.execute(
+            """
+            INSERT INTO vendors (
+                vendor_code, vendor_name, category, products_services, contact_person,
+                phone, email, address, tax_id, iso_certified, avl_status, next_eval_date,
+                cert_filename, local_cert_path, synology_cert_path, notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                clean_code,
+                vendor_name.strip(),
+                category.strip(),
+                products_services.strip(),
+                contact_person.strip(),
+                phone.strip(),
+                email.strip(),
+                address.strip(),
+                tax_id.strip(),
+                iso_certified.strip(),
+                avl_status.strip(),
+                next_eval_date.strip(),
+                cert_fname,
+                cert_local,
+                cert_syno,
+                notes.strip(),
+                now_str,
+            ),
+        )
+        target_id = cur.lastrowid
+
+    conn.commit()
+    conn.close()
+    return {"success": True, "vendor_id": target_id, "message": msg}
+
+
+@app.get("/api/vendors/{vendor_id}/cert")
+def get_vendor_cert_file(vendor_id: int):
+    conn = get_db()
+    v = conn.execute("SELECT * FROM vendors WHERE id = ?", (vendor_id,)).fetchone()
+    conn.close()
+    if not v or not v["local_cert_path"] or not os.path.exists(v["local_cert_path"]):
+        raise HTTPException(status_code=404, detail="ไม่พบไฟล์เอกสารรับรองของผู้จัดจำหน่าย")
+    return FileResponse(v["local_cert_path"], filename=v["cert_filename"])
+
+
+@app.delete("/api/vendors/{vendor_id}")
+def delete_vendor(vendor_id: int):
+    conn = get_db()
+    conn.execute("DELETE FROM vendor_evaluations WHERE vendor_id = ?", (vendor_id,))
+    conn.execute("DELETE FROM vendors WHERE id = ?", (vendor_id,))
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": "ลบข้อมูลผู้จัดจำหน่ายเรียบร้อย"}
+
+
+@app.get("/api/avl-evaluations")
+def list_avl_evaluations(
+    status: str = Query(""),
+    vendor_id: Optional[int] = Query(None),
+    grade: str = Query(""),
+):
+    conn = get_db()
+    sql = """
+        SELECT ve.*, v.vendor_code, v.vendor_name, v.category, v.products_services, v.avl_status, v.contact_person, v.email AS vendor_email
+        FROM vendor_evaluations ve
+        JOIN vendors v ON ve.vendor_id = v.id
+        WHERE 1=1
+    """
+    params: List[Any] = []
+    if status.strip():
+        sql += " AND ve.status = ?"
+        params.append(status.strip())
+    if vendor_id:
+        sql += " AND ve.vendor_id = ?"
+        params.append(vendor_id)
+    if grade.strip():
+        sql += " AND ve.grade = ?"
+        params.append(grade.strip())
+    sql += " ORDER BY ve.planned_date ASC, ve.id DESC"
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+
+    today = datetime.now().date()
+    results = []
+    for r in rows:
+        d = dict(r)
+        try:
+            p_dt = datetime.strptime(r["planned_date"], "%Y-%m-%d").date()
+            d["days_remaining"] = (p_dt - today).days
+        except Exception:
+            d["days_remaining"] = 999
+        results.append(d)
+    return results
+
+
+@app.post("/api/avl-evaluations")
+async def save_avl_evaluation(
+    eval_id: Optional[int] = Form(None),
+    vendor_id: int = Form(...),
+    eval_code: str = Form(...),
+    eval_period: str = Form(...),
+    frequency: str = Form("Quarterly"),
+    planned_date: str = Form(...),
+    notify_days_before: int = Form(30),
+    notify_emails: str = Form(""),
+    status: str = Form("Scheduled"),
+    actual_date: str = Form(""),
+    evaluator: str = Form(""),
+    score_quality: float = Form(0.0),
+    score_service_sla: float = Form(0.0),
+    score_cost: float = Form(0.0),
+    score_cooperation: float = Form(0.0),
+    car_no: str = Form(""),
+    car_due_date: str = Form(""),
+    remarks: str = Form(""),
+    update_vendor_status: bool = Form(True),
+    evidence_file: Optional[UploadFile] = File(None),
+):
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_db()
+    vendor = conn.execute("SELECT * FROM vendors WHERE id = ?", (vendor_id,)).fetchone()
+    if not vendor:
+        conn.close()
+        raise HTTPException(status_code=404, detail="ไม่พบข้อมูลผู้จัดจำหน่าย (Vendor)")
+
+    existing = None
+    if eval_id:
+        existing = conn.execute("SELECT * FROM vendor_evaluations WHERE id = ?", (eval_id,)).fetchone()
+
+    ev_fname = existing["evidence_filename"] if existing else ""
+    ev_local = existing["local_evidence_path"] if existing else ""
+    ev_syno = existing["synology_evidence_path"] if existing else ""
+    msg = "บันทึกแผน/ผลการประเมินผู้จัดจำหน่าย (AVL Evaluation) สำเร็จ"
+
+    if evidence_file and evidence_file.filename:
+        _, ext = os.path.splitext(evidence_file.filename)
+        ext = ext.lower() or ".pdf"
+        safe_code = re.sub(r'[\\/*?:"<>|\s]+', "_", eval_code.strip())
+        ev_fname = f"{vendor['vendor_code']}_{safe_code}_EvalReport{ext}"
+        local_dir = os.path.join(STORAGE_DIR, "ISO", "AVL_Vendors", vendor["vendor_code"], "Evaluations")
+        os.makedirs(local_dir, exist_ok=True)
+        ev_local = os.path.join(local_dir, ev_fname)
+        with open(ev_local, "wb") as f_out:
+            f_out.write(await evidence_file.read())
+
+        syno = get_synology_client()
+        up_res = syno.upload_file(ev_local, f"AVL_Vendors/{vendor['vendor_code']}/Evaluations", ev_fname)
+        ev_syno = up_res["synology_path"]
+        msg = up_res["message"]
+
+    # Calculate score, grade, and review action if Completed or if scores > 0
+    has_scores = (score_quality > 0 or score_service_sla > 0 or score_cost > 0 or score_cooperation > 0 or status == "Completed")
+    if has_scores:
+        calc = calculate_avl_grade_and_action(score_quality, score_service_sla, score_cost, score_cooperation)
+        sq = calc["score_quality"]
+        ss = calc["score_service_sla"]
+        sc = calc["score_cost"]
+        sco = calc["score_cooperation"]
+        tot = calc["total_score"]
+        pflag = calc["pass_criteria_flag"]
+        grd = calc["grade"]
+        ract = calc["review_action"]
+        rec_status = calc["recommended_status"]
+    else:
+        sq, ss, sc, sco, tot, pflag = 0.0, 0.0, 0.0, 0.0, 0.0, 1
+        grd = "-"
+        ract = "รอการประเมินตามแผน ข้อ 3.3 (ตั้งแจ้งเตือนล่วงหน้า 30 วัน)"
+        rec_status = vendor["avl_status"]
+
+    clean_eval_code = eval_code.strip().upper()
+    final_emails = notify_emails.strip() or "maintenance@sunlogis.com, watcharagorn@sunlogis.com"
+
+    if existing:
+        conn.execute(
+            """
+            UPDATE vendor_evaluations
+            SET vendor_id = ?, eval_code = ?, eval_period = ?, frequency = ?, planned_date = ?,
+                notify_days_before = ?, notify_emails = ?, status = ?, actual_date = ?,
+                evaluator = ?, score_quality = ?, score_service_sla = ?, score_cost = ?,
+                score_cooperation = ?, total_score = ?, pass_criteria_flag = ?,
+                grade = ?, review_action = ?, car_no = ?, car_due_date = ?,
+                remarks = ?, evidence_filename = ?, local_evidence_path = ?, synology_evidence_path = ?
+            WHERE id = ?
+            """,
+            (
+                vendor_id,
+                clean_eval_code,
+                eval_period.strip(),
+                frequency,
+                planned_date,
+                notify_days_before,
+                final_emails,
+                status,
+                actual_date,
+                evaluator.strip(),
+                sq,
+                ss,
+                sc,
+                sco,
+                tot,
+                pflag,
+                grd,
+                ract,
+                car_no.strip(),
+                car_due_date.strip(),
+                remarks.strip(),
+                ev_fname,
+                ev_local,
+                ev_syno,
+                eval_id,
+            ),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO vendor_evaluations (
+                vendor_id, eval_code, eval_period, frequency, planned_date,
+                notify_days_before, notify_emails, status, actual_date, evaluator,
+                score_quality, score_service_sla, score_cost, score_cooperation,
+                total_score, pass_criteria_flag, grade, review_action,
+                car_no, car_due_date, remarks,
+                evidence_filename, local_evidence_path, synology_evidence_path, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                vendor_id,
+                clean_eval_code,
+                eval_period.strip(),
+                frequency,
+                planned_date,
+                notify_days_before,
+                final_emails,
+                status,
+                actual_date,
+                evaluator.strip(),
+                sq,
+                ss,
+                sc,
+                sco,
+                tot,
+                pflag,
+                grd,
+                ract,
+                car_no.strip(),
+                car_due_date.strip(),
+                remarks.strip(),
+                ev_fname,
+                ev_local,
+                ev_syno,
+                now_str,
+            ),
+        )
+
+    # Update parent vendor's latest evaluation info
+    if status == "Completed" or has_scores:
+        eval_dt_to_save = actual_date or planned_date
+        new_avl_st = rec_status if update_vendor_status else vendor["avl_status"]
+        conn.execute(
+            """
+            UPDATE vendors
+            SET latest_score = ?, latest_grade = ?, latest_review_action = ?,
+                last_eval_date = ?, avl_status = ?
+            WHERE id = ?
+            """,
+            (tot, grd, ract, eval_dt_to_save, new_avl_st, vendor_id),
+        )
+    else:
+        # Scheduled future evaluation -> update next_eval_date on vendor if empty or earlier
+        conn.execute(
+            "UPDATE vendors SET next_eval_date = ? WHERE id = ?",
+            (planned_date, vendor_id),
+        )
+
+    conn.commit()
+    conn.close()
+    return {
+        "success": True,
+        "message": msg,
+        "total_score": tot,
+        "grade": grd,
+        "review_action": ract,
+    }
+
+
+@app.get("/api/avl-evaluations/{eval_id}/evidence")
+def get_avl_evaluation_evidence(eval_id: int):
+    conn = get_db()
+    ev = conn.execute("SELECT * FROM vendor_evaluations WHERE id = ?", (eval_id,)).fetchone()
+    conn.close()
+    if not ev or not ev["local_evidence_path"] or not os.path.exists(ev["local_evidence_path"]):
+        raise HTTPException(status_code=404, detail="ไม่พบไฟล์หลักฐานการประเมินผู้จัดจำหน่าย")
+    return FileResponse(ev["local_evidence_path"], filename=ev["evidence_filename"])
+
+
+@app.delete("/api/avl-evaluations/{eval_id}")
+def delete_avl_evaluation(eval_id: int):
+    conn = get_db()
+    conn.execute("DELETE FROM vendor_evaluations WHERE id = ?", (eval_id,))
+    conn.commit()
+    conn.close()
+    return {"success": True}
+
+
+@app.post("/api/avl-evaluations/check-alerts")
+def trigger_avl_alerts_now(force: bool = Query(False)):
+    result = check_and_send_avl_notifications(force_resend=force)
+    return result
+
+
+@app.get("/api/version")
+def get_app_version():
+    v_file = os.path.join(BASE_DIR, "version.json")
+    if os.path.exists(v_file):
+        try:
+            with open(v_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"version": "1.1", "updated_at": datetime.now().strftime("%Y-%m-%d")}
+
+
 @app.get("/api/email-logs")
 def get_email_logs():
     conn = get_db()
@@ -1358,6 +1898,7 @@ def dashboard_summary():
     total_trainings = conn.execute("SELECT COUNT(*) as c FROM training_records").fetchone()["c"]
     completed_trainings = conn.execute("SELECT COUNT(*) as c FROM training_records WHERE status = 'Completed'").fetchone()["c"]
     total_equip = conn.execute("SELECT COUNT(*) as c FROM equipment").fetchone()["c"]
+    total_vendors = conn.execute("SELECT COUNT(*) as c FROM vendors").fetchone()["c"]
 
     pms = conn.execute(
         """
@@ -1366,6 +1907,16 @@ def dashboard_summary():
         JOIN equipment e ON p.equip_id = e.id
         WHERE p.status != 'Completed'
         ORDER BY p.planned_date ASC
+        """
+    ).fetchall()
+
+    avl_evals = conn.execute(
+        """
+        SELECT ve.*, v.vendor_code, v.vendor_name, v.category
+        FROM vendor_evaluations ve
+        JOIN vendors v ON ve.vendor_id = v.id
+        WHERE ve.status != 'Completed'
+        ORDER BY ve.planned_date ASC
         """
     ).fetchall()
     conn.close()
@@ -1383,6 +1934,18 @@ def dashboard_summary():
         except Exception:
             pass
 
+    upcoming_avl_30d = []
+    for ve in avl_evals:
+        try:
+            dt = datetime.strptime(ve["planned_date"], "%Y-%m-%d").date()
+            days_left = (dt - today).days
+            if days_left <= 30:
+                item = dict(ve)
+                item["days_remaining"] = days_left
+                upcoming_avl_30d.append(item)
+        except Exception:
+            pass
+
     return {
         "total_docs": total_docs,
         "synced_docs": synced_docs,
@@ -1390,8 +1953,11 @@ def dashboard_summary():
         "total_trainings": total_trainings,
         "completed_trainings": completed_trainings,
         "total_equip": total_equip,
+        "total_vendors": total_vendors,
         "upcoming_pm_30d_count": len(upcoming_30d),
         "upcoming_pm_30d": upcoming_30d,
+        "upcoming_avl_30d_count": len(upcoming_avl_30d),
+        "upcoming_avl_30d": upcoming_avl_30d,
     }
 
 

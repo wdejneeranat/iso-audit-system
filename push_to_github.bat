@@ -1,13 +1,15 @@
 @echo off
 chcp 65001 >nul
 echo ======================================================================
-echo   Update & Push SUNLOGIS ISO Audit System to GitHub
+echo   Update, Bump Version (+0.1) ^& Push SUNLOGIS ISO Audit System to GitHub
 echo   Repository: https://github.com/wdejneeranat/iso-audit-system.git
 echo ======================================================================
 echo.
 
 set /p COMMIT_MSG="ระบุข้อความการอัปเดต (กด Enter เพื่อใช้ค่าเริ่มต้น 'Update ISO Audit System'): "
 if "%COMMIT_MSG%"=="" set COMMIT_MSG=Update ISO Audit System (%date% %time%)
+
+python bump_version.py
 
 git remote get-url origin >nul 2>&1
 if errorlevel 1 (
@@ -20,6 +22,6 @@ git push -u origin main
 
 echo.
 echo ======================================================================
-echo   อัปเดตโค้ดขึ้น GitHub สำเร็จเรียบร้อย!
+echo   อัปเดตเวอร์ชัน (+0.1) และ Push โค้ดขึ้น GitHub สำเร็จเรียบร้อย!
 echo ======================================================================
 pause

@@ -237,6 +237,72 @@ def init_db() -> None:
         """
     )
 
+    # 11. Approved Vendor List (AVL - ทะเบียนผู้จัดจำหน่ายที่ผ่านการอนุมัติ)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS vendors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vendor_code TEXT UNIQUE NOT NULL,
+            vendor_name TEXT NOT NULL,
+            category TEXT NOT NULL, -- MHE & Storage Systems, Fire Protection Systems, Other
+            products_services TEXT DEFAULT '',
+            contact_person TEXT DEFAULT '',
+            phone TEXT DEFAULT '',
+            email TEXT DEFAULT '',
+            address TEXT DEFAULT '',
+            tax_id TEXT DEFAULT '',
+            iso_certified TEXT DEFAULT '',
+            avl_status TEXT DEFAULT 'Approved', -- Approved, Conditional (CAR), Suspended / Removed
+            latest_score REAL DEFAULT 0.0,
+            latest_grade TEXT DEFAULT '-',
+            latest_review_action TEXT DEFAULT '',
+            last_eval_date TEXT DEFAULT '',
+            next_eval_date TEXT DEFAULT '',
+            cert_filename TEXT DEFAULT '',
+            synology_cert_path TEXT DEFAULT '',
+            local_cert_path TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+    # 12. Supplier Evaluation & Schedule (การประเมินผู้จัดจำหน่าย ข้อ 3.2 & แผนการประเมิน ข้อ 3.3 + แจ้งเตือนล่วงหน้า 30 วัน)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS vendor_evaluations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vendor_id INTEGER NOT NULL,
+            eval_code TEXT UNIQUE NOT NULL,
+            eval_period TEXT NOT NULL, -- e.g. 2026-Q4, Annual 2026
+            frequency TEXT NOT NULL, -- Quarterly, Semi-Annual, Annual, CAR Follow-up
+            planned_date TEXT NOT NULL,
+            notify_days_before INTEGER DEFAULT 30,
+            notify_emails TEXT DEFAULT '',
+            notification_sent INTEGER DEFAULT 0,
+            notification_sent_at TEXT DEFAULT '',
+            status TEXT DEFAULT 'Scheduled', -- Scheduled, Notified, Completed, Overdue
+            actual_date TEXT DEFAULT '',
+            evaluator TEXT DEFAULT '',
+            score_quality REAL DEFAULT 0.0, -- Max 35%, Expected >= 28%
+            score_service_sla REAL DEFAULT 0.0, -- Max 30%, Expected >= 24%
+            score_cost REAL DEFAULT 0.0, -- Max 20%
+            score_cooperation REAL DEFAULT 0.0, -- Max 15%
+            total_score REAL DEFAULT 0.0, -- Max 100%, Expected >= 80%
+            pass_criteria_flag INTEGER DEFAULT 1, -- 1 if quality>=28 and service>=24 and total>=80
+            grade TEXT DEFAULT '-', -- A (90-100%), B (80-89%), C (70-79%), D (<70%)
+            review_action TEXT DEFAULT '', -- Action per Manual Section 3.3
+            car_no TEXT DEFAULT '',
+            car_due_date TEXT DEFAULT '',
+            remarks TEXT DEFAULT '',
+            evidence_filename TEXT DEFAULT '',
+            synology_evidence_path TEXT DEFAULT '',
+            local_evidence_path TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
     # 10. System Settings (Synology Drive & SMTP Configuration)
     cur.execute(
         """
@@ -602,6 +668,279 @@ def init_db() -> None:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (eq_id, pm_code, pm_title, freq, pdate, ndays, nemails, nsent, nsent_at, st, adate, perf_by, res_sum, cost, now_str),
+            )
+
+    # Ensure sample External Document (EX) exists in documents
+    cur.execute("SELECT COUNT(*) as cnt FROM documents WHERE category = 'EX'")
+    if cur.fetchone()["cnt"] == 0:
+        ex_docs = [
+            (
+                "EX-NFPA-025",
+                "มาตรฐานสากลระบบป้องกันอัคคีภัยและตรวจสอบปั๊มดับเพลิง (NFPA 25 / UL / FM Standard Manual)",
+                "EX",
+                "2025-01-10",
+                0,
+                "2025-01-10",
+                "Active",
+                "Internal",
+                json.dumps(["Admin", "DCC", "HR", "Maintenance", "Viewer"]),
+                json.dumps(["All"]),
+                json.dumps([]),
+                "เอกสารภายนอก (External Document) อ้างอิงตามคู่มือการคัดสรรและติดตามคุณภาพผู้จัดจำหน่าย",
+            ),
+            (
+                "QM-AVL-001",
+                "คู่มือการคัดสรร เลือกผู้จัดจำหน่าย และติดตามคุณภาพ (Supplier Selection & Quality Monitoring Manual)",
+                "QM",
+                "2026-01-01",
+                0,
+                "2026-01-01",
+                "Active",
+                "Public",
+                json.dumps(["Admin", "DCC", "HR", "Maintenance", "Viewer"]),
+                json.dumps(["All"]),
+                json.dumps([]),
+                "กำหนดเกณฑ์การให้คะแนนประเมินผู้จัดจำหน่าย ข้อ 3.2 และแผนการประเมิน ข้อ 3.3 สำหรับ AVL",
+            ),
+        ]
+        for code, title, cat, eff_date, rev_no, rev_date, status, conf, roles, depts, users_list, notes in ex_docs:
+            cur.execute(
+                """
+                INSERT OR IGNORE INTO documents (
+                    doc_code, doc_title, category, effective_date, revision_no, revision_date,
+                    status, confidentiality, allowed_roles, allowed_departments, allowed_users,
+                    uploaded_by, notes, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Watcharagorn', ?, ?)
+                """,
+                (code, title, cat, eff_date, rev_no, rev_date, status, conf, roles, depts, users_list, notes, now_str),
+            )
+
+    # Seed sample Approved Vendor List (AVL) & Supplier Evaluations if empty
+    cur.execute("SELECT COUNT(*) as cnt FROM vendors")
+    if cur.fetchone()["cnt"] == 0:
+        due_20 = (today + timedelta(days=20)).strftime("%Y-%m-%d")
+        due_28 = (today + timedelta(days=28)).strftime("%Y-%m-%d")
+        due_75 = (today + timedelta(days=75)).strftime("%Y-%m-%d")
+        done_prev = (today - timedelta(days=15)).strftime("%Y-%m-%d")
+        car_due = (today + timedelta(days=30)).strftime("%Y-%m-%d")
+
+        sample_vendors = [
+            (
+                "AVL-MHE-001",
+                "บริษัท โตโยต้า ทูโช ฟอร์คลิฟท์ (ไทยแลนด์) จำกัด (Toyota Material Handling)",
+                "MHE & Storage Systems",
+                "รถโฟร์คลิฟท์ไฟฟ้า (Forklift), รถยกสูง (Reach Truck), บริการซ่อมบำรุง PM และอะไหล่แท้",
+                "คุณธนกร วิศวกรรมบริการ",
+                "02-123-4567",
+                "service@toyotaforklift-th.example.com",
+                "นิคมอุตสาหกรรมอมตะซิตี้ จ.ชลบุรี",
+                "0105551234567",
+                "ISO 9001:2015, ISO 14001, มอก.",
+                "Approved",
+                93.0,
+                "A",
+                "ระดับ A (90-100%): คุณภาพดีเยี่ยม คงสถานะพันธมิตรหลักและให้สิทธิพิเศษพิจารณาเป็นเจ้าแรกในการประมูลรอบถัดไป",
+                done_prev,
+                due_20,
+                "ผ่านเกณฑ์การประเมินขั้นต้นและมีทีมช่าง Response Time ภายใน 4 ชม.",
+            ),
+            (
+                "AVL-FPS-001",
+                "บริษัท ไฟร์โปร เอ็นจิเนียริ่ง แอนด์ ซิสเต็มส์ จำกัด (FirePro Engineering)",
+                "Fire Protection Systems",
+                "ระบบปั๊มดับเพลิง (Fire Pump), ตู้ควบคุม, สปริงเกอร์, ระบบแจ้งเหตุเพลิงไหม้ (Fire Alarm) มาตรฐาน NFPA/UL/FM",
+                "คุณพงษ์ศักดิ์ วิศวกรระบบอัคคีภัย (กว.เครื่องกล)",
+                "02-987-6543",
+                "engineering@firepro-th.example.com",
+                "เขตลาดกระบัง กรุงเทพมหานคร",
+                "0105559876543",
+                "ISO 9001:2015, UL/FM Listed, NFPA Standard",
+                "Approved",
+                85.0,
+                "B",
+                "ระดับ B (80-89%): คุณภาพอยู่ในเกณฑ์มาตรฐาน แจ้ง Feedback ถึงจุดที่สามารถพัฒนาต่อได้",
+                done_prev,
+                due_28,
+                "มีวิศวกรได้รับใบอนุญาต กว. ควบคุมงานทดสอบระบบ Fire Pump ประจำปี",
+            ),
+            (
+                "AVL-MHE-002",
+                "บริษัท สยาม แร็ค แอนด์ สตอเรจ ซิสเต็มส์ จำกัด (Siam Rack & Storage)",
+                "MHE & Storage Systems",
+                "ระบบชั้นวางสินค้าอุตสาหกรรม (Selective Rack, Drive-in Rack), อุปกรณ์กันชนเสา และตรวจสอบโครงสร้าง",
+                "คุณสุรชัย ฝ่ายโครงการคลังสินค้า",
+                "02-555-8899",
+                "sales@siamrack-th.example.com",
+                "อ.บางพลี จ.สมุทรปราการ",
+                "0105554433221",
+                "ISO 9001:2015, FEM 10.2.02",
+                "Conditional (CAR)",
+                74.0,
+                "C",
+                "ระดับ C (70-79%): ต้องออกเอกสารแจ้งเตือน (Corrective Action Request - CAR) ให้ผู้จัดจำหน่ายทำแผนแก้ไขและปรับปรุงปัญหาภายใน 30-60 วัน",
+                done_prev,
+                due_75,
+                "พบความล่าช้าในการจัดส่งรายงานตรวจสอบความดิ่งเสาในไตรมาสก่อน ออกใบ CAR เพื่อติดตามผล",
+            ),
+        ]
+        for vcode, vname, cat, prod, contact, phone, email, addr, tax, iso, st, lscore, lgrade, laction, leval, neval, notes in sample_vendors:
+            cur.execute(
+                """
+                INSERT INTO vendors (
+                    vendor_code, vendor_name, category, products_services, contact_person,
+                    phone, email, address, tax_id, iso_certified, avl_status,
+                    latest_score, latest_grade, latest_review_action, last_eval_date, next_eval_date,
+                    notes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (vcode, vname, cat, prod, contact, phone, email, addr, tax, iso, st, lscore, lgrade, laction, leval, neval, notes, now_str),
+            )
+
+        sample_evals = [
+            (
+                1,
+                "AVL-EVAL-2026-Q3-01",
+                "2026-Q3 (ไตรมาส 3/2026)",
+                "Quarterly",
+                done_prev,
+                30,
+                "maintenance@sunlogis.com, watcharagorn@sunlogis.com",
+                1,
+                done_prev,
+                "Completed",
+                done_prev,
+                "สมชาย สายชล (Warehouse Supervisor)",
+                33.0,
+                28.0,
+                18.0,
+                14.0,
+                93.0,
+                1,
+                "A",
+                "ระดับ A (90-100%): คุณภาพดีเยี่ยม คงสถานะพันธมิตรหลักและให้สิทธิพิเศษพิจารณาเป็นเจ้าแรกในการประมูลรอบถัดไป",
+                "",
+                "",
+                "รถโฟร์คลิฟท์ทำงานเต็มประสิทธิภาพ เข้าทำ PM ตรงเวลาทุกครั้ง Report ชัดเจน",
+            ),
+            (
+                2,
+                "AVL-EVAL-2026-Q3-02",
+                "2026-Q3 (ไตรมาส 3/2026)",
+                "Quarterly",
+                done_prev,
+                30,
+                "maintenance@sunlogis.com, watcharagorn@sunlogis.com",
+                1,
+                done_prev,
+                "Completed",
+                done_prev,
+                "สมชาย สายชล (Warehouse Supervisor)",
+                30.0,
+                25.0,
+                17.0,
+                13.0,
+                85.0,
+                1,
+                "B",
+                "ระดับ B (80-89%): คุณภาพอยู่ในเกณฑ์มาตรฐาน แจ้ง Feedback ถึงจุดที่สามารถพัฒนาต่อได้",
+                "",
+                "",
+                "ระบบ Fire Pump และ Fire Alarm ทำงานปกติ แนะนำให้ส่งกำหนดการเข้าตรวจล่วงหน้าเร็วขึ้น",
+            ),
+            (
+                3,
+                "AVL-EVAL-2026-Q3-03",
+                "2026-Q3 (ไตรมาส 3/2026)",
+                "Quarterly",
+                done_prev,
+                30,
+                "maintenance@sunlogis.com, watcharagorn@sunlogis.com",
+                1,
+                done_prev,
+                "Completed",
+                done_prev,
+                "วิภาวดี ศรีสวัสดิ์ (DCC / QMR)",
+                28.0,
+                21.0,
+                15.0,
+                10.0,
+                74.0,
+                0,
+                "C",
+                "ระดับ C (70-79%): ต้องออกเอกสารแจ้งเตือน (Corrective Action Request - CAR) ให้ผู้จัดจำหน่ายทำแผนแก้ไขและปรับปรุงปัญหาภายใน 30-60 วัน",
+                "CAR-AVL-2026-001",
+                car_due,
+                "คะแนนบริการหลังการขาย & SLA (21/30) ต่ำกว่าเกณฑ์ขั้นต่ำที่คาดหวัง (24%) และส่ง Report ล่าช้า ออกใบ CAR ให้แก้ไขภายใน 30 วัน",
+            ),
+            (
+                1,
+                "AVL-EVAL-2026-Q4-01",
+                "2026-Q4 (ประเมินประจำไตรมาส 4 + สรุปรายปี)",
+                "Quarterly",
+                due_20,
+                30,
+                "maintenance@sunlogis.com, watcharagorn@sunlogis.com",
+                0,
+                "",
+                "Scheduled",
+                "",
+                "สมชาย สายชล / คณะกรรมการ AVL",
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1,
+                "-",
+                "รอการประเมินตามแผน ข้อ 3.3 (อยู่ในช่วงแจ้งเตือนล่วงหน้า 30 วัน)",
+                "",
+                "",
+                "แผนประเมินผู้จัดจำหน่ายหลักกลุ่ม MHE & Storage Systems รอบไตรมาส 4/2026",
+            ),
+            (
+                2,
+                "AVL-EVAL-2026-Q4-02",
+                "2026-Q4 (ประเมินระบบป้องกันอัคคีภัยประจำปี)",
+                "Annual",
+                due_28,
+                30,
+                "maintenance@sunlogis.com, watcharagorn@sunlogis.com",
+                0,
+                "",
+                "Scheduled",
+                "",
+                "สมชาย สายชล / วิศวกรความปลอดภัย",
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1,
+                "-",
+                "รอการประเมินตามแผน ข้อ 3.3 (อยู่ในช่วงแจ้งเตือนล่วงหน้า 30 วัน)",
+                "",
+                "",
+                "แผนประเมินผู้จัดจำหน่ายกลุ่ม Fire Protection Systems ประจำปี",
+            ),
+        ]
+        for (
+            vid, ecode, eperiod, freq, pdate, ndays, nemails, nsent, nsent_at,
+            st, adate, evaluator, sq, ss, sc, sco, tot, pflag, grd, ract, cno, cdue, rem
+        ) in sample_evals:
+            cur.execute(
+                """
+                INSERT INTO vendor_evaluations (
+                    vendor_id, eval_code, eval_period, frequency, planned_date,
+                    notify_days_before, notify_emails, notification_sent, notification_sent_at,
+                    status, actual_date, evaluator, score_quality, score_service_sla,
+                    score_cost, score_cooperation, total_score, pass_criteria_flag,
+                    grade, review_action, car_no, car_due_date, remarks, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    vid, ecode, eperiod, freq, pdate, ndays, nemails, nsent, nsent_at,
+                    st, adate, evaluator, sq, ss, sc, sco, tot, pflag, grd, ract, cno, cdue, rem, now_str
+                ),
             )
 
     conn.commit()

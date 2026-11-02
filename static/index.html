@@ -34,7 +34,12 @@
     <!-- ===================================================== -->
     <!-- FULL-SCREEN LOGIN PAGE (FIRST SCREEN OF THE APP)      -->
     <!-- ===================================================== -->
-    <div id="loginScreen" class="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 p-4">
+    <div id="loginScreen" class="relative min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 p-4">
+        <!-- Version Badge at Top-Right Corner of Login Screen -->
+        <div class="fixed top-4 right-4 z-50 bg-slate-900/90 text-emerald-300 border border-emerald-500/40 px-3.5 py-1.5 rounded-full text-xs font-bold shadow-lg backdrop-blur flex items-center gap-1.5">
+            <i class="fa-solid fa-code-branch text-emerald-400"></i>
+            <span class="app-version-label">Version 1.1</span>
+        </div>
         <div class="bg-white rounded-3xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200/80">
             <div class="bg-gradient-to-r from-blue-700 to-indigo-800 px-8 py-7 text-white text-center">
                 <div class="w-16 h-16 rounded-2xl bg-white/15 backdrop-blur mx-auto flex items-center justify-center text-3xl shadow-inner mb-3">
@@ -174,6 +179,12 @@
                         <i class="fa-solid fa-right-from-bracket"></i> ออกจากระบบ
                     </button>
                 </div>
+
+                <!-- Version Badge at Top-Right Corner of Main App Header -->
+                <div class="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-3 py-1.5 rounded-xl text-xs font-bold shadow-sm flex items-center gap-1.5" title="System Version (Auto-incremented on GitHub push)">
+                    <i class="fa-solid fa-code-branch text-emerald-400"></i>
+                    <span class="app-version-label">Version 1.1</span>
+                </div>
             </div>
         </div>
     </header>
@@ -212,6 +223,14 @@
                     <div class="text-left">
                         <div>อุปกรณ์ MHE, Rack & PM</div>
                         <div class="text-[11px] font-normal opacity-75">ทะเบียน, แจ้งเมล 30 วัน & PM</div>
+                    </div>
+                </button>
+
+                <button onclick="switchTab('avl')" id="tabBtn-avl" class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold text-slate-700 hover:bg-slate-100 transition">
+                    <i class="fa-solid fa-handshake-simple w-5 text-center"></i>
+                    <div class="text-left">
+                        <div>Approved Vendor List (AVL)</div>
+                        <div class="text-[11px] font-normal opacity-75">ทะเบียนผู้ค้า & ประเมินข้อ 3.2-3.3</div>
                     </div>
                 </button>
 
@@ -258,7 +277,7 @@
             <!-- TAB 1: DASHBOARD                           -->
             <!-- ========================================== -->
             <section id="tab-dashboard" class="space-y-6">
-                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
                     <div onclick="switchTab('documents')" class="cursor-pointer bg-white p-5 rounded-2xl shadow-sm border border-slate-200 hover:border-blue-400 transition">
                         <div class="flex items-center justify-between">
                             <div>
@@ -294,6 +313,19 @@
                             </div>
                             <div class="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center text-xl">
                                 <i class="fa-solid fa-truck-ramp-box"></i>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div onclick="switchTab('avl')" class="cursor-pointer bg-white p-5 rounded-2xl shadow-sm border border-teal-200 hover:border-teal-400 transition">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-xs font-semibold text-teal-700 uppercase">Approved Vendor List (AVL)</p>
+                                <h3 id="kpiTotalVendors" class="text-3xl font-bold text-teal-700 mt-1">0</h3>
+                                <p id="kpiUpcomingAvl" class="text-xs text-teal-600 mt-1 font-medium">แผนประเมิน 30 วัน: 0 รายการ</p>
+                            </div>
+                            <div class="w-12 h-12 rounded-2xl bg-teal-50 text-teal-600 flex items-center justify-center text-xl">
+                                <i class="fa-solid fa-handshake-simple"></i>
                             </div>
                         </div>
                     </div>
@@ -411,6 +443,7 @@
                                 <option value="WI">WI - วิธีปฏิบัติงาน (Work Instruction)</option>
                                 <option value="FM">FM - แบบฟอร์ม (Form)</option>
                                 <option value="SD">SD - เอกสารสนับสนุน (Support Document)</option>
+                                <option value="EX">EX - เอกสารภายนอก (External Document)</option>
                             </select>
                         </div>
                         <div>
@@ -589,9 +622,187 @@
                     <!-- Email Notification Audit Logs -->
                     <div class="mt-6 pt-4 border-t border-slate-200">
                         <h4 class="text-xs font-bold uppercase text-slate-500 mb-2 flex items-center gap-1.5">
-                            <i class="fa-solid fa-clock-rotate-left"></i> ประวัติการส่งอีเมลแจ้งเตือนแผน PM ล่วงหน้า 30 วัน (Email Alert Logs)
+                            <i class="fa-solid fa-clock-rotate-left"></i> ประวัติการส่งอีเมลแจ้งเตือนแผน PM & AVL ล่วงหน้า 30 วัน (Email Alert Logs)
                         </h4>
                         <div id="emailLogsContainer" class="max-h-48 overflow-y-auto text-xs divide-y divide-slate-100 bg-slate-50 rounded-xl border border-slate-200 p-2"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ========================================== -->
+            <!-- TAB 4.5: APPROVED VENDOR LIST (AVL)        -->
+            <!-- ========================================== -->
+            <section id="tab-avl" class="hidden space-y-6">
+                <!-- Reference Card: Manual Section 3.2 & Section 3.3 -->
+                <div class="bg-gradient-to-r from-teal-900 via-emerald-900 to-slate-900 text-white rounded-2xl shadow-md p-5">
+                    <div class="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-white/15">
+                        <div>
+                            <span class="text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-emerald-400/20 text-emerald-300 border border-emerald-400/30">
+                                Supplier Selection & Quality Monitoring Manual
+                            </span>
+                            <h2 class="text-lg font-bold mt-1 flex items-center gap-2">
+                                <i class="fa-solid fa-handshake-simple text-emerald-400"></i>
+                                ทะเบียนผู้จัดจำหน่ายที่ผ่านการอนุมัติ (Approved Vendor List – AVL) & การประเมินคุณภาพ
+                            </h2>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <button onclick="openVendorModal()" class="bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-bold px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow transition">
+                                <i class="fa-solid fa-building-circle-check"></i> + เพิ่มข้อมูลผู้จัดจำหน่าย (Vendor)
+                            </button>
+                            <button onclick="openAvlEvalModal()" class="bg-teal-500 hover:bg-teal-600 text-white text-xs font-bold px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow transition">
+                                <i class="fa-solid fa-clipboard-check"></i> + สร้างแผน / บันทึกผลประเมิน (ข้อ 3.2 & 3.3)
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4 text-xs">
+                        <!-- Manual Section 3.2 Summary -->
+                        <div class="bg-white/10 backdrop-blur rounded-xl p-3.5 border border-white/15 space-y-2">
+                            <div class="font-bold text-emerald-300 flex items-center gap-1.5 text-sm">
+                                <i class="fa-solid fa-scale-balanced"></i> ข้อ 3.2 ตารางเกณฑ์การให้คะแนนประเมิน (Scoring Criteria - รวม 100%)
+                            </div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] leading-relaxed">
+                                <div class="bg-slate-900/50 p-2 rounded-lg border border-white/10">
+                                    <span class="font-bold text-white">1. คุณภาพสินค้า/งานติดตั้ง (35%)</span><br/>
+                                    <span class="text-emerald-300 font-semibold">คาดหวัง &ge; 28%</span> | ความทนทาน, ตรงสเปค, ไม่เกิด Defect ซ้ำซาก
+                                </div>
+                                <div class="bg-slate-900/50 p-2 rounded-lg border border-white/10">
+                                    <span class="font-bold text-white">2. บริการหลังการขาย & SLA (30%)</span><br/>
+                                    <span class="text-emerald-300 font-semibold">คาดหวัง &ge; 24%</span> | เข้าซ่อมบำรุงตรงเวลา, Response Time ทันทีในกรณีฉุกเฉิน
+                                </div>
+                                <div class="bg-slate-900/50 p-2 rounded-lg border border-white/10">
+                                    <span class="font-bold text-white">3. ความคุ้มค่าด้านต้นทุน (20%)</span><br/>
+                                    ราคาอะไหล่และค่าแรงสมเหตุสมผล, ไม่บวกเพิ่มเกินจริง
+                                </div>
+                                <div class="bg-slate-900/50 p-2 rounded-lg border border-white/10">
+                                    <span class="font-bold text-white">4. ความร่วมมือและเอกสาร (15%)</span><br/>
+                                    ส่ง Report ซ่อมบำรุงชัดเจน, ความถูกต้องของ Invoice
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Manual Section 3.3 Summary -->
+                        <div class="bg-white/10 backdrop-blur rounded-xl p-3.5 border border-white/15 space-y-2">
+                            <div class="font-bold text-amber-300 flex items-center gap-1.5 text-sm">
+                                <i class="fa-solid fa-ranking-star"></i> ข้อ 3.3 แผนการประเมิน การทบทวนสถานะ และแจ้งเตือนล่วงหน้า 30 วัน
+                            </div>
+                            <div class="space-y-1.5 text-[11px]">
+                                <div class="flex items-start gap-2">
+                                    <span class="px-2 py-0.5 rounded bg-emerald-500 text-white font-bold shrink-0">ระดับ A (90-100%)</span>
+                                    <span>คุณภาพดีเยี่ยม คงสถานะพันธมิตรหลักและให้สิทธิพิเศษพิจารณาเป็นเจ้าแรกในการประมูลรอบถัดไป</span>
+                                </div>
+                                <div class="flex items-start gap-2">
+                                    <span class="px-2 py-0.5 rounded bg-blue-500 text-white font-bold shrink-0">ระดับ B (80-89%)</span>
+                                    <span>คุณภาพอยู่ในเกณฑ์มาตรฐาน แจ้ง Feedback ถึงจุดที่สามารถพัฒนาต่อได้</span>
+                                </div>
+                                <div class="flex items-start gap-2">
+                                    <span class="px-2 py-0.5 rounded bg-amber-500 text-white font-bold shrink-0">ระดับ C (70-79%)</span>
+                                    <span>ออกเอกสารแจ้งเตือน (Corrective Action Request - CAR) ให้ทำแผนแก้ไขและปรับปรุงภายใน 30–60 วัน</span>
+                                </div>
+                                <div class="flex items-start gap-2">
+                                    <span class="px-2 py-0.5 rounded bg-rose-600 text-white font-bold shrink-0">ระดับ D (&lt; 70%)</span>
+                                    <span>ระงับการสั่งซื้อใหม่ชั่วคราว หากไม่ปรับปรุงตามกำหนดให้ถอดชื่อออกจากทะเบียนผู้ค้า (Remove from AVL)</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 1. Vendor Registry Table (เก็บข้อมูล Vendor แต่ละราย) -->
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+                    <div class="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-100">
+                        <div>
+                            <h3 class="text-base font-bold text-slate-900 flex items-center gap-2">
+                                <i class="fa-solid fa-building-shield text-teal-600"></i>
+                                1. ทะเบียนข้อมูลผู้จัดจำหน่ายแต่ละราย (Approved Vendor List – AVL Registry)
+                            </h3>
+                            <p class="text-xs text-slate-500 mt-0.5">
+                                จัดเก็บข้อมูลผู้จัดจำหน่ายกลุ่มอุปกรณ์ขนถ่ายวัสดุและจัดเก็บ (MHE & Storage Systems) และกลุ่มระบบป้องกันระงับอัคคีภัย (Fire Protection Systems) พร้อมเอกสารรับรองบน Synology (/DATA/ISO/AVL_Vendors)
+                            </p>
+                        </div>
+                        <button onclick="openVendorModal()" class="bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold px-4 py-2 rounded-xl flex items-center gap-1.5 transition">
+                            <i class="fa-solid fa-plus"></i> เพิ่ม Vendor รายใหม่
+                        </button>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-3 mt-4">
+                        <div class="md:col-span-2 relative">
+                            <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-3 text-slate-400 text-sm"></i>
+                            <input type="text" id="avlVendorSearchInput" oninput="loadAvlData()" placeholder="ค้นหารหัส Vendor (เช่น AVL-MHE-001), ชื่อบริษัท, สินค้า/บริการ, ผู้ติดต่อ..." class="w-full pl-9 pr-4 py-2 text-sm border border-slate-300 rounded-xl focus:outline-none focus:border-teal-500" />
+                        </div>
+                        <div>
+                            <select id="avlCategoryFilter" onchange="loadAvlData()" class="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:outline-none focus:border-teal-500">
+                                <option value="">ทุกหมวดหมู่ผู้จัดจำหน่าย (All Categories)</option>
+                                <option value="MHE & Storage Systems">MHE & Storage Systems (อุปกรณ์ขนถ่ายและจัดเก็บ)</option>
+                                <option value="Fire Protection Systems">Fire Protection Systems (ระบบป้องกันอัคคีภัย)</option>
+                                <option value="Other">Other (ผู้จัดจำหน่ายและบริการอื่นๆ)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <select id="avlStatusFilter" onchange="loadAvlData()" class="w-full px-3 py-2 text-sm border border-slate-300 rounded-xl focus:outline-none focus:border-teal-500">
+                                <option value="">ทุกสถานะ AVL (All Status)</option>
+                                <option value="Approved">Approved (อนุมัติในทะเบียน AVL)</option>
+                                <option value="Conditional (CAR)">Conditional (CAR - ติดตามใบแจ้งเตือนแก้ไข)</option>
+                                <option value="Suspended / Removed">Suspended / Removed (ระงับ/ถอดออกจาก AVL)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="overflow-x-auto mt-4">
+                        <table class="w-full text-left border-collapse text-sm">
+                            <thead>
+                                <tr class="bg-slate-50 text-slate-600 border-y border-slate-200 text-xs uppercase">
+                                    <th class="py-3 px-3 font-bold">รหัส / ชื่อผู้จัดจำหน่าย (Vendor)</th>
+                                    <th class="py-3 px-3 font-bold">หมวดหมู่ / สินค้าและบริการ</th>
+                                    <th class="py-3 px-3 font-bold">ผู้ติดต่อ & มาตรฐานรับรอง</th>
+                                    <th class="py-3 px-3 font-bold text-center">สถานะ AVL</th>
+                                    <th class="py-3 px-3 font-bold text-center">ผลประเมินล่าสุด (ข้อ 3.2)</th>
+                                    <th class="py-3 px-3 font-bold">แนวทางปฏิบัติ (ข้อ 3.3) / รอบถัดไป</th>
+                                    <th class="py-3 px-3 font-bold text-right">จัดการ</th>
+                                </tr>
+                            </thead>
+                            <tbody id="avlVendorsTableBody" class="divide-y divide-slate-100"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- 2 & 3. Evaluation Scoring (Sec 3.2) & Schedule + 30-Day Email Alert (Sec 3.3) -->
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+                    <div class="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-100">
+                        <div>
+                            <h3 class="text-base font-bold text-slate-900 flex items-center gap-2">
+                                <i class="fa-solid fa-calendar-check text-rose-600"></i>
+                                2 & 3. ผลการประเมินตามเกณฑ์ ข้อ 3.2 และแผนการประเมิน ข้อ 3.3 (แจ้งเตือนอีเมลล่วงหน้า 30 วัน)
+                            </h3>
+                            <p class="text-xs text-slate-500 mt-0.5">
+                                บันทึกคะแนนทั้ง 4 หัวข้อ (35% + 30% + 20% + 15% = 100%) คำนวณเกรด A/B/C/D อัตโนมัติ พร้อมระบบส่งเมลแจ้งเตือนล่วงหน้า 30 วันก่อนถึงกำหนดประเมิน
+                            </p>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <button onclick="triggerAvlAlertsNow(true)" class="bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow-sm transition">
+                                <i class="fa-solid fa-envelope-open-text"></i> ตรวจสอบ & ส่งเมลแจ้งเตือนประเมิน AVL ล่วงหน้า 30 วันทันที
+                            </button>
+                            <button onclick="openAvlEvalModal()" class="bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow-sm transition">
+                                <i class="fa-solid fa-plus"></i> สร้างแผนประเมิน / บันทึกคะแนนประเมิน
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="overflow-x-auto mt-4">
+                        <table class="w-full text-left border-collapse text-sm">
+                            <thead>
+                                <tr class="bg-slate-50 text-slate-600 border-y border-slate-200 text-xs uppercase">
+                                    <th class="py-3 px-3 font-bold">รหัสแผน / รอบประเมิน</th>
+                                    <th class="py-3 px-3 font-bold">ผู้จัดจำหน่าย (Vendor)</th>
+                                    <th class="py-3 px-3 font-bold text-center">กำหนดการ & แจ้งเตือน 30 วัน</th>
+                                    <th class="py-3 px-3 font-bold text-center">คะแนนตามเกณฑ์ ข้อ 3.2 (35/30/20/15)</th>
+                                    <th class="py-3 px-3 font-bold text-center">รวม / เกรด</th>
+                                    <th class="py-3 px-3 font-bold">การดำเนินการตาม ข้อ 3.3 & หลักฐาน</th>
+                                    <th class="py-3 px-3 font-bold text-right">จัดการ</th>
+                                </tr>
+                            </thead>
+                            <tbody id="avlEvaluationsTableBody" class="divide-y divide-slate-100"></tbody>
+                        </table>
                     </div>
                 </div>
             </section>
@@ -623,6 +834,9 @@
                             </button>
                             <button onclick="loadSynologyExplorer('MHE_Maintenance')" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold px-3.5 py-2 rounded-xl transition">
                                 <i class="fa-solid fa-folder-open text-emerald-500"></i> /MHE_Maintenance
+                            </button>
+                            <button onclick="loadSynologyExplorer('AVL_Vendors')" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold px-3.5 py-2 rounded-xl transition">
+                                <i class="fa-solid fa-folder-open text-teal-500"></i> /AVL_Vendors
                             </button>
                             <button onclick="syncAllToSynology()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold px-4 py-2 rounded-xl shadow-sm transition">
                                 <i class="fa-solid fa-cloud-arrow-up"></i> Sync All Now
@@ -789,6 +1003,7 @@
                             <option value="WI">WI - Work Instruction</option>
                             <option value="FM">FM - Form (แบบฟอร์ม)</option>
                             <option value="SD">SD - Support Document</option>
+                            <option value="EX">EX - เอกสารภายนอก (External Document)</option>
                         </select>
                     </div>
                     <div>
@@ -1285,6 +1500,277 @@
                 <button onclick="closeModal('revisionModal')" class="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
             </div>
             <div id="revisionListContainer" class="divide-y divide-slate-100 max-h-96 overflow-y-auto text-sm"></div>
+        </div>
+    </div>
+
+    <!-- ===================================================== -->
+    <!-- MODAL 8: ADD / EDIT VENDOR (AVL REGISTRY)             -->
+    <!-- ===================================================== -->
+    <div id="vendorModal" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-4 overflow-y-auto">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-6 space-y-4 my-8 max-h-[92vh] overflow-y-auto">
+            <div class="flex items-center justify-between border-b pb-3">
+                <h3 class="text-base font-bold text-slate-900 flex items-center gap-2">
+                    <i class="fa-solid fa-building-shield text-teal-600"></i>
+                    ข้อมูลผู้จัดจำหน่ายในทะเบียน Approved Vendor List (AVL)
+                </h3>
+                <button onclick="closeModal('vendorModal')" class="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
+            </div>
+            <form id="vendorForm" onsubmit="submitVendorForm(event)" class="space-y-3 text-sm">
+                <input type="hidden" id="v_id" />
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">รหัสผู้จัดจำหน่าย (Vendor Code) *</label>
+                        <input type="text" id="v_code" required placeholder="เช่น AVL-MHE-003" class="w-full px-3 py-2 border rounded-xl font-mono uppercase" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">หมวดหมู่ตามคู่มือ *</label>
+                        <select id="v_category" class="w-full px-3 py-2 border rounded-xl">
+                            <option value="MHE & Storage Systems">MHE & Storage Systems (อุปกรณ์ขนถ่ายวัสดุและจัดเก็บ)</option>
+                            <option value="Fire Protection Systems">Fire Protection Systems (ระบบป้องกันระงับอัคคีภัย)</option>
+                            <option value="Other">Other (ผู้จัดจำหน่ายและบริการอื่นๆ)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">สถานะในทะเบียน AVL</label>
+                        <select id="v_status" class="w-full px-3 py-2 border rounded-xl font-semibold">
+                            <option value="Approved">Approved (อนุมัติเป็นพันธมิตร)</option>
+                            <option value="Conditional (CAR)">Conditional (CAR - รอแก้ไขปรับปรุง)</option>
+                            <option value="Suspended / Removed">Suspended / Removed (ระงับ/ถอดชื่อ)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">ชื่อบริษัท / ผู้จัดจำหน่าย (Vendor Name) *</label>
+                    <input type="text" id="v_name" required placeholder="ระบุชื่อบริษัท..." class="w-full px-3 py-2 border rounded-xl" />
+                </div>
+
+                <div>
+                    <label class="block text-xs font-bold text-slate-700 mb-1">สินค้าและบริการหลัก (Products & Services)</label>
+                    <input type="text" id="v_products" placeholder="เช่น รถโฟร์คลิฟท์ไฟฟ้า, ชั้นวางสินค้า Selective Rack, ระบบปั๊มดับเพลิง Fire Pump..." class="w-full px-3 py-2 border rounded-xl" />
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">ชื่อผู้ติดต่อ / วิศวกรผู้ดูแล</label>
+                        <input type="text" id="v_contact" placeholder="ชื่อผู้ติดต่อ..." class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">เบอร์โทรศัพท์</label>
+                        <input type="text" id="v_phone" placeholder="02-xxx-xxxx" class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">อีเมลติดต่อ</label>
+                        <input type="email" id="v_email" placeholder="contact@vendor.com" class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">เลขประจำตัวผู้เสียภาษี (Tax ID)</label>
+                        <input type="text" id="v_tax_id" class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">มาตรฐานรับรอง (เช่น ISO 9001, มอก., NFPA, กว.)</label>
+                        <input type="text" id="v_iso" placeholder="ISO 9001:2015, UL/FM, ใบ กว." class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">กำหนดประเมินรอบถัดไป</label>
+                        <input type="date" id="v_next_eval" class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">ที่อยู่สถานประกอบการ</label>
+                        <input type="text" id="v_address" class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">หมายเหตุ / เงื่อนไข SLA</label>
+                        <input type="text" id="v_notes" placeholder="เช่น Response Time ภายใน 4 ชม." class="w-full px-3 py-2 border rounded-xl" />
+                    </div>
+                </div>
+
+                <div class="bg-teal-50 p-3.5 rounded-xl border border-teal-200">
+                    <label class="block text-xs font-bold text-teal-900 mb-1">
+                        <i class="fa-solid fa-file-certificate"></i> แนบเอกสารรับรองผู้จัดจำหน่าย (หนังสือรับรองบริษัท / ISO Certificate / ใบ กว. — เก็บลง Synology /DATA/ISO/AVL_Vendors)
+                    </label>
+                    <input type="file" id="v_cert_file" class="w-full text-xs" />
+                </div>
+
+                <div class="flex justify-end gap-2 pt-2 border-t">
+                    <button type="button" onclick="closeModal('vendorModal')" class="px-4 py-2 rounded-xl border text-xs font-semibold">ยกเลิก</button>
+                    <button type="submit" class="px-5 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold shadow">บันทึกข้อมูลผู้จัดจำหน่าย (AVL)</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===================================================== -->
+    <!-- MODAL 9: AVL EVALUATION & SCHEDULE (MANUAL 3.2 & 3.3) -->
+    <!-- ===================================================== -->
+    <div id="avlEvalModal" class="hidden fixed inset-0 z-50 modal-backdrop flex items-center justify-center p-4 overflow-y-auto">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-3xl w-full p-6 space-y-4 my-8 max-h-[94vh] overflow-y-auto">
+            <div class="flex items-center justify-between border-b pb-3">
+                <div>
+                    <h3 class="text-base font-bold text-slate-900 flex items-center gap-2">
+                        <i class="fa-solid fa-clipboard-check text-teal-600"></i>
+                        แผนการประเมิน & ตารางเกณฑ์การให้คะแนนประเมินผู้จัดจำหน่าย (ตามคู่มือ ข้อ 3.2 และ 3.3)
+                    </h3>
+                    <p class="text-xs text-slate-500">ตั้งแผนแจ้งเตือนอีเมลล่วงหน้า 30 วัน และบันทึกผลคะแนนประเมินเพื่อคำนวณระดับเกรด A / B / C / D อัตโนมัติ</p>
+                </div>
+                <button onclick="closeModal('avlEvalModal')" class="text-slate-400 hover:text-slate-600 text-xl">&times;</button>
+            </div>
+
+            <form id="avlEvalForm" onsubmit="submitAvlEvalForm(event)" class="space-y-4 text-sm">
+                <input type="hidden" id="ae_id" />
+
+                <!-- Schedule Info & 30-Day Alert -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div class="md:col-span-2">
+                        <label class="block text-xs font-bold text-slate-700 mb-1">เลือกผู้จัดจำหน่าย (Vendor) *</label>
+                        <select id="ae_vendor_id" required class="w-full px-3 py-2 border rounded-xl font-semibold"></select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">รหัสการประเมิน *</label>
+                        <input type="text" id="ae_code" required placeholder="เช่น AVL-EVAL-2026-Q4-01" class="w-full px-3 py-2 border rounded-xl font-mono uppercase" />
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-3 bg-rose-50/60 p-3.5 rounded-xl border border-rose-200">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">รอบการประเมิน (Period) *</label>
+                        <input type="text" id="ae_period" required placeholder="เช่น 2026-Q4 หรือ Annual 2026" class="w-full px-3 py-2 border rounded-xl bg-white" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-700 mb-1">ความถี่ตามแผน ข้อ 3.3</label>
+                        <select id="ae_frequency" class="w-full px-3 py-2 border rounded-xl bg-white">
+                            <option value="Quarterly">Quarterly (รายไตรมาส)</option>
+                            <option value="Annual">Annual (สรุปผลประจำปี)</option>
+                            <option value="Semi-Annual">Semi-Annual (ทุก 6 เดือน)</option>
+                            <option value="CAR Follow-up">CAR Follow-up (ติดตามใบ CAR 30-60 วัน)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-rose-700 mb-1">วันที่กำหนดประเมิน (Plan) *</label>
+                        <input type="date" id="ae_planned_date" required class="w-full px-3 py-2 border border-rose-300 rounded-xl bg-white" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-rose-700 mb-1">แจ้งเตือนล่วงหน้า (วัน)</label>
+                        <input type="number" id="ae_notify_days" value="30" class="w-full px-3 py-2 border border-rose-300 rounded-xl bg-white" />
+                    </div>
+                    <div class="md:col-span-4">
+                        <label class="block text-xs font-bold text-slate-700 mb-1">
+                            <i class="fa-solid fa-envelope text-rose-600"></i> อีเมลผู้รับแจ้งเตือนล่วงหน้า 30 วัน (คั่นด้วยลูกน้ำ)
+                        </label>
+                        <input type="text" id="ae_notify_emails" placeholder="maintenance@sunlogis.com, watcharagorn@sunlogis.com" class="w-full px-3 py-1.5 border rounded-xl bg-white text-xs" />
+                    </div>
+                </div>
+
+                <!-- Scoring Table per Manual Section 3.2 -->
+                <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <span class="text-xs font-bold text-teal-900 uppercase flex items-center gap-1.5">
+                            <i class="fa-solid fa-table-list text-teal-600"></i>
+                            ตารางเกณฑ์การให้คะแนนประเมิน ตามคู่มือ ข้อ 3.2 (กรอกคะแนนเมื่อดำเนินการประเมิน)
+                        </span>
+                        <div class="flex items-center gap-2">
+                            <label class="text-xs font-bold text-slate-700">สถานะ:</label>
+                            <select id="ae_status" onchange="recalcAvlModalPreview()" class="px-2.5 py-1 border rounded-lg text-xs font-bold bg-white">
+                                <option value="Scheduled">Scheduled (แผนล่วงหน้า - รอประเมิน)</option>
+                                <option value="Notified">Notified (ส่งเมลแจ้งเตือน 30 วันแล้ว)</option>
+                                <option value="Completed">Completed (ประเมินผลเรียบร้อย)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                        <div class="bg-white p-3 rounded-xl border border-slate-200">
+                            <div class="flex justify-between font-bold text-slate-800 mb-1">
+                                <span>1. คุณภาพสินค้า/งานติดตั้ง (เต็ม 35%)</span>
+                                <span class="text-teal-700">คาดหวัง &ge; 28%</span>
+                            </div>
+                            <p class="text-[11px] text-slate-500 mb-2">ความทนทาน, ตรงตามสเปค, ไม่เกิดปัญหาซ้ำซาก (Defect)</p>
+                            <input type="number" step="0.5" min="0" max="35" id="ae_score_quality" oninput="recalcAvlModalPreview()" value="0" class="w-full px-3 py-1.5 border rounded-lg font-bold text-sm text-teal-900" />
+                        </div>
+
+                        <div class="bg-white p-3 rounded-xl border border-slate-200">
+                            <div class="flex justify-between font-bold text-slate-800 mb-1">
+                                <span>2. บริการหลังการขาย & SLA (เต็ม 30%)</span>
+                                <span class="text-teal-700">คาดหวัง &ge; 24%</span>
+                            </div>
+                            <p class="text-[11px] text-slate-500 mb-2">การเข้าซ่อมบำรุงตรงเวลา, Response Time ทันทีในกรณีฉุกเฉิน</p>
+                            <input type="number" step="0.5" min="0" max="30" id="ae_score_service" oninput="recalcAvlModalPreview()" value="0" class="w-full px-3 py-1.5 border rounded-lg font-bold text-sm text-teal-900" />
+                        </div>
+
+                        <div class="bg-white p-3 rounded-xl border border-slate-200">
+                            <div class="flex justify-between font-bold text-slate-800 mb-1">
+                                <span>3. ความคุ้มค่าด้านต้นทุน (เต็ม 20%)</span>
+                                <span class="text-slate-500">Weight 20%</span>
+                            </div>
+                            <p class="text-[11px] text-slate-500 mb-2">ราคาอะไหล่และค่าแรงสมเหตุสมผล, ไม่มีการบวกเพิ่มเกินจริง</p>
+                            <input type="number" step="0.5" min="0" max="20" id="ae_score_cost" oninput="recalcAvlModalPreview()" value="0" class="w-full px-3 py-1.5 border rounded-lg font-bold text-sm text-teal-900" />
+                        </div>
+
+                        <div class="bg-white p-3 rounded-xl border border-slate-200">
+                            <div class="flex justify-between font-bold text-slate-800 mb-1">
+                                <span>4. ความร่วมมือและเอกสาร (เต็ม 15%)</span>
+                                <span class="text-slate-500">Weight 15%</span>
+                            </div>
+                            <p class="text-[11px] text-slate-500 mb-2">การจัดส่ง Report ซ่อมบำรุงชัดเจน, ความถูกต้องของเอกสารวางบิล (Invoice)</p>
+                            <input type="number" step="0.5" min="0" max="15" id="ae_score_coop" oninput="recalcAvlModalPreview()" value="0" class="w-full px-3 py-1.5 border rounded-lg font-bold text-sm text-teal-900" />
+                        </div>
+                    </div>
+
+                    <!-- Auto-calculated Section 3.3 Grade & Action Banner -->
+                    <div id="aePreviewBanner" class="bg-teal-900 text-white p-3.5 rounded-xl flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                            <div class="text-xs text-teal-200">ผลรวมคะแนนประเมิน (คาดหวัง &ge; 80%) & การทบทวนสถานะตาม ข้อ 3.3:</div>
+                            <div id="aePreviewActionText" class="text-xs font-semibold mt-0.5">กรอกคะแนนเพื่อคำนวณเกรด A / B / C / D อัตโนมัติ</div>
+                        </div>
+                        <div class="text-right">
+                            <span id="aePreviewTotalScore" class="text-2xl font-extrabold text-emerald-300">0%</span>
+                            <span id="aePreviewGradeBadge" class="ml-2 px-3 py-1 rounded-lg bg-white/20 font-bold text-sm">Grade -</span>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-3 pt-1">
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1">วันที่ประเมินจริง</label>
+                            <input type="date" id="ae_actual_date" class="w-full px-3 py-1.5 border rounded-lg bg-white text-xs" />
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-600 mb-1">ผู้ประเมิน / คณะกรรมการ</label>
+                            <input type="text" id="ae_evaluator" placeholder="ชื่อผู้ประเมิน..." class="w-full px-3 py-1.5 border rounded-lg bg-white text-xs" />
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-amber-700 mb-1">เลขที่ใบ CAR (กรณีเกรด C/D)</label>
+                            <input type="text" id="ae_car_no" placeholder="เช่น CAR-AVL-2026-002" class="w-full px-3 py-1.5 border border-amber-300 rounded-lg bg-white text-xs font-mono" />
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-amber-700 mb-1">กำหนดส่งแผนแก้ไข CAR (30-60 วัน)</label>
+                            <input type="date" id="ae_car_due" class="w-full px-3 py-1.5 border border-amber-300 rounded-lg bg-white text-xs" />
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">สรุปผลการประเมิน / Feedback / รายละเอียดการติดตามผล</label>
+                        <input type="text" id="ae_remarks" placeholder="ระบุข้อคิดเห็นหรือจุดที่ผู้จัดจำหน่ายต้องปรับปรุง..." class="w-full px-3 py-1.5 border rounded-lg bg-white text-xs" />
+                    </div>
+                </div>
+
+                <div class="bg-emerald-50 p-3.5 rounded-xl border border-emerald-200">
+                    <label class="block text-xs font-bold text-emerald-900 mb-1">
+                        <i class="fa-solid fa-file-shield"></i> Upload หลักฐานการประเมิน / ใบ CAR / Service Report (เก็บลง Synology /DATA/ISO/AVL_Vendors)
+                    </label>
+                    <input type="file" id="ae_evidence_file" class="w-full text-xs" />
+                </div>
+
+                <div class="flex justify-end gap-2 pt-2 border-t">
+                    <button type="button" onclick="closeModal('avlEvalModal')" class="px-4 py-2 rounded-xl border text-xs font-semibold">ยกเลิก</button>
+                    <button type="submit" class="px-5 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold shadow">บันทึกแผนและผลการประเมิน (AVL)</button>
+                </div>
+            </form>
         </div>
     </div>
 

@@ -186,3 +186,111 @@ def check_and_send_pm_notifications(force_resend: bool = False) -> Dict[str, Any
         "triggered": triggered,
         "errors": errors,
     }
+
+
+def check_and_send_avl_notifications(force_resend: bool = False) -> Dict[str, Any]:
+    """
+    Scan all AVL Supplier Evaluation schedules (vendor_evaluations) that are not Completed.
+    If days remaining until planned_date <= notify_days_before (default 30 days),
+    send 30-day advance email notification per Manual Section 3.3.
+    """
+    cfg = get_settings_dict()
+    default_advance_days = int(cfg.get("pm_advance_days", "30") or 30)
+
+    conn = get_db()
+    rows = conn.execute(
+        """
+        SELECT ve.*, v.vendor_code, v.vendor_name, v.category, v.products_services, v.contact_person, v.email AS vendor_email, v.avl_status
+        FROM vendor_evaluations ve
+        JOIN vendors v ON ve.vendor_id = v.id
+        WHERE ve.status != 'Completed'
+        ORDER BY ve.planned_date ASC
+        """
+    ).fetchall()
+    conn.close()
+
+    today = datetime.now().date()
+    triggered = []
+    errors = []
+
+    for r in rows:
+        try:
+            planned_dt = datetime.strptime(r["planned_date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+
+        days_left = (planned_dt - today).days
+        advance_window = r["notify_days_before"] or default_advance_days
+
+        if days_left <= advance_window and (not r["notification_sent"] or force_resend):
+            recipients = r["notify_emails"] or "watcharagorn@sunlogis.com, maintenance@sunlogis.com"
+            urgency_label = (
+                f"เกินกำหนด {abs(days_left)} วัน (OVERDUE)"
+                if days_left < 0
+                else f"อีก {days_left} วันจะถึงกำหนดประเมิน (แจ้งเตือนล่วงหน้า 30 วัน)"
+            )
+            subject = f"[ISO AVL Alert] แจ้งเตือนแผนประเมินผู้จัดจำหน่าย (AVL) {r['vendor_code']} ({r['vendor_name']}) - กำหนดวันที่ {r['planned_date']}"
+            html_body = f"""
+            <div style="font-family: 'Sarabun', sans-serif; max-width: 660px; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;">
+                <div style="background: #0f766e; color: #ffffff; padding: 16px 20px;">
+                    <h2 style="margin: 0; font-size: 18px;">แจ้งเตือนแผนการประเมินผู้จัดจำหน่าย (AVL Supplier Evaluation Alert)</h2>
+                    <p style="margin: 4px 0 0; font-size: 13px; opacity: 0.9;">อ้างอิง: คู่มือการคัดสรร เลือกผู้จัดจำหน่าย และติดตามคุณภาพ ข้อ 3.2 และ 3.3 (Sunlogis ISO System)</p>
+                </div>
+                <div style="padding: 20px; background: #ffffff; color: #1e293b; line-height: 1.6;">
+                    <p>เรียน คณะกรรมการประเมินผู้จัดจำหน่าย / ผู้รับผิดชอบ ({r['evaluator'] or 'ทีมจัดซื้อ, วิศวกรรม และ QMR/ISO'}),</p>
+                    <p>ระบบขอแจ้งเตือนล่วงหน้า 30 วัน สำหรับแผนการประเมินผู้จัดจำหน่ายในทะเบียน Approved Vendor List (AVL) โดยมีรายละเอียดดังนี้:</p>
+                    <table style="width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 14px;">
+                        <tr><td style="padding: 8px; border-bottom: 1px solid #f1f5f9; font-weight: bold; width: 35%;">รหัสแผนประเมิน:</td><td style="padding: 8px; border-bottom: 1px solid #f1f5f9;">{r['eval_code']} ({r['eval_period']})</td></tr>
+                        <tr><td style="padding: 8px; border-bottom: 1px solid #f1f5f9; font-weight: bold;">รหัสผู้จัดจำหน่าย (AVL):</td><td style="padding: 8px; border-bottom: 1px solid #f1f5f9;">{r['vendor_code']} — {r['vendor_name']}</td></tr>
+                        <tr><td style="padding: 8px; border-bottom: 1px solid #f1f5f9; font-weight: bold;">กลุ่มผลิตภัณฑ์/บริการ:</td><td style="padding: 8px; border-bottom: 1px solid #f1f5f9;">{r['category']} ({r['products_services']})</td></tr>
+                        <tr><td style="padding: 8px; border-bottom: 1px solid #f1f5f9; font-weight: bold;">ความถี่การประเมิน:</td><td style="padding: 8px; border-bottom: 1px solid #f1f5f9;">{r['frequency']}</td></tr>
+                        <tr><td style="padding: 8px; border-bottom: 1px solid #f1f5f9; font-weight: bold;">วันที่กำหนดประเมิน:</td><td style="padding: 8px; border-bottom: 1px solid #f1f5f9; color: #dc2626; font-weight: bold;">{r['planned_date']} ({urgency_label})</td></tr>
+                    </table>
+                    <div style="background: #f8fafc; border-left: 4px solid #0f766e; padding: 10px 14px; font-size: 13px; margin: 12px 0;">
+                        <strong>เกณฑ์การให้คะแนนประเมิน (คู่มือ ข้อ 3.2):</strong><br/>
+                        1. คุณภาพสินค้า/งานติดตั้ง (35% — คาดหวัง &ge; 28%)<br/>
+                        2. บริการหลังการขาย &amp; SLA (30% — คาดหวัง &ge; 24%)<br/>
+                        3. ความคุ้มค่าด้านต้นทุน (20%)<br/>
+                        4. ความร่วมมือและเอกสาร (15%)<br/>
+                        <em>รวม 100% (ต้องได้ &ge; 80% เพื่อคงสถานะเกรด A/B หากได้ 70-79% ต้องออกใบ CAR และต่ำกว่า 70% ระงับการสั่งซื้อชั่วคราว)</em>
+                    </div>
+                    <p style="font-size: 13px; color: #475569;">กรุณาบันทึกผลการประเมินลงในเมนู <strong>Approved Vendor List (AVL)</strong> และแนบหลักฐานการจัดเก็บลง Synology Drive (/DATA/ISO/AVL_Vendors)</p>
+                </div>
+            </div>
+            """
+            ok, msg = send_smtp_email(recipients, subject, html_body, pm_id=r["id"], equip_code=r["vendor_code"])
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if ok:
+                c2 = get_db()
+                new_status = "Overdue" if days_left < 0 else "Notified"
+                c2.execute(
+                    """
+                    UPDATE vendor_evaluations
+                    SET notification_sent = 1, notification_sent_at = ?, status = ?
+                    WHERE id = ?
+                    """,
+                    (now_str, new_status, r["id"]),
+                )
+                c2.commit()
+                c2.close()
+                triggered.append(
+                    {
+                        "eval_id": r["id"],
+                        "eval_code": r["eval_code"],
+                        "vendor_code": r["vendor_code"],
+                        "vendor_name": r["vendor_name"],
+                        "planned_date": r["planned_date"],
+                        "days_left": days_left,
+                        "recipients": recipients,
+                        "message": msg,
+                    }
+                )
+            else:
+                errors.append({"eval_code": r["eval_code"], "error": msg})
+
+    return {
+        "checked_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "triggered_count": len(triggered),
+        "triggered": triggered,
+        "errors": errors,
+    }

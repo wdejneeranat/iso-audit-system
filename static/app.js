@@ -9,9 +9,24 @@ let allDocumentsCache = [];
 let allEmployeesCache = [];
 let allEquipmentCache = [];
 let allPmCache = [];
+let allVendorsCache = [];
+let allAvlEvalsCache = [];
 let currentDossierEmpId = null;
 
+async function loadAppVersion() {
+    try {
+        const res = await fetch("/api/version");
+        if (res.ok) {
+            const v = await res.json();
+            document.querySelectorAll(".app-version-label").forEach((el) => {
+                el.textContent = `Version ${v.version || "1.1"}`;
+            });
+        }
+    } catch (e) {}
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
+    await loadAppVersion();
     const saved = sessionStorage.getItem("iso_current_user");
     if (saved) {
         try {
@@ -184,7 +199,7 @@ function switchTab(tabName) {
         return;
     }
 
-    const tabs = ["dashboard", "documents", "employees", "equipment", "synology", "settings"];
+    const tabs = ["dashboard", "documents", "employees", "equipment", "avl", "synology", "settings"];
     tabs.forEach((t) => {
         const sec = document.getElementById(`tab-${t}`);
         const btn = document.getElementById(`tabBtn-${t}`);
@@ -196,6 +211,7 @@ function switchTab(tabName) {
     if (tabName === "documents") loadDocuments();
     if (tabName === "employees") loadEmployees();
     if (tabName === "equipment") loadEquipmentAndPm();
+    if (tabName === "avl") loadAvlData();
     if (tabName === "synology") loadSynologyExplorer("");
     if (tabName === "settings") {
         loadSystemSettings();
@@ -219,6 +235,7 @@ async function refreshAllData() {
         loadDocuments(),
         loadEmployees(),
         loadEquipmentAndPm(),
+        loadAvlData(),
     ]);
 }
 
@@ -288,6 +305,10 @@ async function loadDashboard() {
         document.getElementById("kpiTrainings").textContent = `แผนและประวัติฝึกอบรม ${d.total_trainings} รายการ (เสร็จสิ้น ${d.completed_trainings})`;
         document.getElementById("kpiTotalEquip").textContent = d.total_equip;
         document.getElementById("kpiUpcomingPm").textContent = d.upcoming_pm_30d_count;
+        const kpiVendors = document.getElementById("kpiTotalVendors");
+        if (kpiVendors) kpiVendors.textContent = d.total_vendors ?? 0;
+        const kpiAvl = document.getElementById("kpiUpcomingAvl");
+        if (kpiAvl) kpiAvl.textContent = `แผนประเมินล่วงหน้า 30 วัน: ${d.upcoming_avl_30d_count ?? 0} รายการ`;
 
         const pmList = document.getElementById("dashboardPmList");
         if (!d.upcoming_pm_30d || d.upcoming_pm_30d.length === 0) {
@@ -1299,4 +1320,404 @@ async function deleteUser(uid) {
     if (!confirm("ยืนยันการลบผู้ใช้งานนี้?")) return;
     await fetch(`/api/users/${uid}`, { method: "DELETE", headers: apiHeaders() });
     await loadUsersList();
+}
+
+// =========================================================
+// 8. APPROVED VENDOR LIST (AVL) & SUPPLIER EVALUATION (SEC 3.2 & 3.3)
+// =========================================================
+function getGradeBadgeHtml(grade, score) {
+    if (!grade || grade === "-") {
+        return `<span class="px-2.5 py-0.5 rounded-full text-xs bg-slate-100 text-slate-600 font-semibold">รอประเมิน</span>`;
+    }
+    const colors = {
+        A: "bg-emerald-100 text-emerald-800 border border-emerald-300",
+        B: "bg-blue-100 text-blue-800 border border-blue-300",
+        C: "bg-amber-100 text-amber-800 border border-amber-300",
+        D: "bg-rose-100 text-rose-800 border border-rose-300",
+    };
+    const cls = colors[grade] || "bg-slate-100 text-slate-700";
+    return `<span class="px-2.5 py-1 rounded-lg text-xs font-extrabold ${cls}">ระดับ ${grade} (${score}%)</span>`;
+}
+
+function getAvlStatusBadgeHtml(status) {
+    if (status === "Approved") {
+        return `<span class="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800"><i class="fa-solid fa-circle-check"></i> Approved</span>`;
+    }
+    if (status === "Conditional (CAR)") {
+        return `<span class="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800"><i class="fa-solid fa-triangle-exclamation"></i> Conditional (CAR)</span>`;
+    }
+    return `<span class="px-2.5 py-1 rounded-full text-xs font-bold bg-rose-100 text-rose-800"><i class="fa-solid fa-ban"></i> ${status}</span>`;
+}
+
+async function loadAvlData() {
+    const q = document.getElementById("avlVendorSearchInput")?.value || "";
+    const cat = document.getElementById("avlCategoryFilter")?.value || "";
+    const st = document.getElementById("avlStatusFilter")?.value || "";
+
+    try {
+        const [vRes, evRes] = await Promise.all([
+            fetch(`/api/vendors?q=${encodeURIComponent(q)}&category=${encodeURIComponent(cat)}&avl_status=${encodeURIComponent(st)}`, { headers: apiHeaders() }),
+            fetch(`/api/avl-evaluations`, { headers: apiHeaders() }),
+        ]);
+        allVendorsCache = await vRes.json();
+        allAvlEvalsCache = await evRes.json();
+
+        const vBody = document.getElementById("avlVendorsTableBody");
+        if (vBody) {
+            if (!allVendorsCache.length) {
+                vBody.innerHTML = `<tr><td colspan="7" class="py-8 text-center text-slate-400">ไม่พบรายชื่อผู้จัดจำหน่ายในทะเบียน AVL</td></tr>`;
+            } else {
+                vBody.innerHTML = allVendorsCache
+                    .map((v) => {
+                        const certLink = v.cert_filename
+                            ? `<a href="/api/vendors/${v.id}/cert" target="_blank" class="text-[11px] text-teal-700 font-semibold hover:underline flex items-center gap-1 mt-1"><i class="fa-solid fa-file-shield"></i> ${v.cert_filename}</a>`
+                            : `<span class="text-[11px] text-slate-400 block mt-1">ไม่มีไฟล์แนบ</span>`;
+
+                        return `
+                        <tr class="hover:bg-slate-50">
+                            <td class="py-3 px-3">
+                                <div class="font-mono font-bold text-teal-800 text-xs">${v.vendor_code}</div>
+                                <div class="font-bold text-slate-900">${v.vendor_name}</div>
+                                <div class="text-[11px] text-slate-400">${v.address || ""} ${v.tax_id ? `| Tax ID: ${v.tax_id}` : ""}</div>
+                            </td>
+                            <td class="py-3 px-3">
+                                <span class="text-[11px] px-2 py-0.5 rounded bg-teal-50 text-teal-800 font-semibold border border-teal-200">${v.category}</span>
+                                <div class="text-xs text-slate-700 mt-1">${v.products_services || "-"}</div>
+                            </td>
+                            <td class="py-3 px-3 text-xs">
+                                <div class="font-semibold text-slate-800">${v.contact_person || "-"}</div>
+                                <div class="text-slate-500">${v.phone || ""} ${v.email ? `| ${v.email}` : ""}</div>
+                                <div class="text-[11px] text-indigo-700 font-semibold mt-0.5">${v.iso_certified || ""}</div>
+                                ${certLink}
+                            </td>
+                            <td class="py-3 px-3 text-center">${getAvlStatusBadgeHtml(v.avl_status)}</td>
+                            <td class="py-3 px-3 text-center">
+                                ${getGradeBadgeHtml(v.latest_grade, v.latest_score)}
+                                ${v.last_eval_date ? `<div class="text-[11px] text-slate-400 mt-1">ประเมินล่าสุด: ${v.last_eval_date}</div>` : ""}
+                            </td>
+                            <td class="py-3 px-3 text-xs">
+                                <div class="text-slate-700 font-medium">${v.latest_review_action || "-"}</div>
+                                ${v.next_eval_date ? `<div class="text-[11px] font-bold text-rose-600 mt-1"><i class="fa-solid fa-calendar-day"></i> แผนประเมินถัดไป: ${v.next_eval_date}</div>` : ""}
+                            </td>
+                            <td class="py-3 px-3 text-right whitespace-nowrap">
+                                <button onclick="openAvlEvalModalForVendor(${v.id})" class="bg-teal-50 hover:bg-teal-100 text-teal-700 text-xs font-semibold px-2.5 py-1.5 rounded-lg mr-1" title="ประเมินผล / ตั้งแผนประเมิน">
+                                    <i class="fa-solid fa-clipboard-check"></i> ประเมิน
+                                </button>
+                                <button onclick="editVendor(${v.id})" class="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs px-2.5 py-1.5 rounded-lg mr-1" title="แก้ไขข้อมูล Vendor">
+                                    <i class="fa-solid fa-pen"></i>
+                                </button>
+                                <button onclick="deleteVendor(${v.id})" class="bg-rose-50 hover:bg-rose-100 text-rose-600 text-xs px-2 py-1.5 rounded-lg" title="ลบ">
+                                    <i class="fa-solid fa-trash"></i>
+                                </button>
+                            </td>
+                        </tr>
+                        `;
+                    })
+                    .join("");
+            }
+        }
+
+        const evBody = document.getElementById("avlEvaluationsTableBody");
+        if (evBody) {
+            if (!allAvlEvalsCache.length) {
+                evBody.innerHTML = `<tr><td colspan="7" class="py-8 text-center text-slate-400">ยังไม่มีรายการประเมินผู้จัดจำหน่าย</td></tr>`;
+            } else {
+                evBody.innerHTML = allAvlEvalsCache
+                    .map((ev) => {
+                        let schedBadge = "";
+                        if (ev.status === "Completed") {
+                            schedBadge = `<span class="px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-800 font-semibold"><i class="fa-solid fa-check"></i> ประเมินแล้ว (${ev.actual_date || ev.planned_date})</span>`;
+                        } else if (ev.days_remaining <= 30) {
+                            schedBadge = `<span class="px-2 py-0.5 rounded-full text-xs bg-rose-100 text-rose-700 font-bold"><i class="fa-solid fa-bell"></i> อีก ${ev.days_remaining} วัน (แจ้งเตือนล่วงหน้า 30 วัน)</span>`;
+                        } else {
+                            schedBadge = `<span class="px-2 py-0.5 rounded-full text-xs bg-blue-50 text-blue-700">อีก ${ev.days_remaining} วันถึงกำหนด</span>`;
+                        }
+
+                        const mailStatus = ev.notification_sent
+                            ? `<div class="text-[11px] text-emerald-600 mt-1"><i class="fa-solid fa-envelope-circle-check"></i> ส่งเมลแจ้งเตือนแล้ว (${ev.notification_sent_at})</div>`
+                            : `<div class="text-[11px] text-slate-400 mt-1">แจ้งเตือนไปยัง: ${ev.notify_emails || "-"}</div>`;
+
+                        const scoresBreakdown =
+                            ev.status === "Completed" || ev.total_score > 0
+                                ? `
+                                <div class="text-xs space-y-0.5">
+                                    <div>1. คุณภาพ: <strong class="${ev.score_quality >= 28 ? "text-emerald-700" : "text-rose-600"}">${ev.score_quality}/35%</strong> | 2. บริการ/SLA: <strong class="${ev.score_service_sla >= 24 ? "text-emerald-700" : "text-rose-600"}">${ev.score_service_sla}/30%</strong></div>
+                                    <div>3. ต้นทุน: <strong>${ev.score_cost}/20%</strong> | 4. ความร่วมมือ: <strong>${ev.score_cooperation}/15%</strong></div>
+                                </div>
+                                `
+                                : `<span class="text-xs text-slate-400">รอการบันทึกคะแนนประเมิน</span>`;
+
+                        const evFileLink = ev.evidence_filename
+                            ? `<a href="/api/avl-evaluations/${ev.id}/evidence" target="_blank" class="text-xs text-teal-700 font-semibold hover:underline flex items-center gap-1 mt-1"><i class="fa-solid fa-file-circle-check"></i> ${ev.evidence_filename}</a>`
+                            : `<span class="text-[11px] text-slate-400 block mt-1">ยังไม่มีไฟล์แนบ</span>`;
+
+                        const carBadge = ev.car_no
+                            ? `<div class="text-[11px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded mt-1 inline-block">ใบแจ้งเตือน CAR: ${ev.car_no} (กำหนดส่งแผน: ${ev.car_due_date || "-"})</div>`
+                            : "";
+
+                        return `
+                        <tr class="hover:bg-slate-50">
+                            <td class="py-3 px-3">
+                                <div class="font-mono font-bold text-slate-800 text-xs">${ev.eval_code}</div>
+                                <div class="text-xs font-semibold text-teal-700">${ev.eval_period}</div>
+                                <div class="text-[11px] text-slate-400">ความถี่: ${ev.frequency}</div>
+                            </td>
+                            <td class="py-3 px-3">
+                                <div class="font-mono font-bold text-xs text-teal-800">${ev.vendor_code}</div>
+                                <div class="font-bold text-slate-900 text-xs">${ev.vendor_name}</div>
+                                <div class="text-[11px] text-slate-500">${ev.category}</div>
+                            </td>
+                            <td class="py-3 px-3 text-center">
+                                <div class="font-mono font-bold text-slate-800 text-xs">แผน: ${ev.planned_date}</div>
+                                <div class="mt-1">${schedBadge}</div>
+                                ${mailStatus}
+                            </td>
+                            <td class="py-3 px-3 text-center">${scoresBreakdown}</td>
+                            <td class="py-3 px-3 text-center">${getGradeBadgeHtml(ev.grade, ev.total_score)}</td>
+                            <td class="py-3 px-3 text-xs">
+                                <div class="font-medium text-slate-800">${ev.review_action || "-"}</div>
+                                ${carBadge}
+                                ${ev.remarks ? `<div class="text-[11px] text-slate-500 mt-0.5">หมายเหตุ: ${ev.remarks}</div>` : ""}
+                                ${evFileLink}
+                            </td>
+                            <td class="py-3 px-3 text-right whitespace-nowrap">
+                                <button onclick="editAvlEval(${ev.id})" class="bg-teal-50 hover:bg-teal-100 text-teal-700 text-xs font-semibold px-3 py-1.5 rounded-lg mr-1">
+                                    <i class="fa-solid fa-pen-to-square"></i> บันทึกคะแนน / หลักฐาน
+                                </button>
+                                <button onclick="deleteAvlEval(${ev.id})" class="bg-rose-50 hover:bg-rose-100 text-rose-600 text-xs px-2 py-1.5 rounded-lg">
+                                    <i class="fa-solid fa-trash"></i>
+                                </button>
+                            </td>
+                        </tr>
+                        `;
+                    })
+                    .join("");
+            }
+        }
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+function openVendorModal() {
+    document.getElementById("vendorForm").reset();
+    document.getElementById("v_id").value = "";
+    const in90Days = new Date(Date.now() + 90 * 86400000).toISOString().split("T")[0];
+    document.getElementById("v_next_eval").value = in90Days;
+    openModal("vendorModal");
+}
+
+function editVendor(vendorId) {
+    const v = allVendorsCache.find((x) => x.id === vendorId);
+    if (!v) return;
+    document.getElementById("v_id").value = v.id;
+    document.getElementById("v_code").value = v.vendor_code;
+    document.getElementById("v_category").value = v.category;
+    document.getElementById("v_status").value = v.avl_status;
+    document.getElementById("v_name").value = v.vendor_name;
+    document.getElementById("v_products").value = v.products_services || "";
+    document.getElementById("v_contact").value = v.contact_person || "";
+    document.getElementById("v_phone").value = v.phone || "";
+    document.getElementById("v_email").value = v.email || "";
+    document.getElementById("v_tax_id").value = v.tax_id || "";
+    document.getElementById("v_iso").value = v.iso_certified || "";
+    document.getElementById("v_next_eval").value = v.next_eval_date || "";
+    document.getElementById("v_address").value = v.address || "";
+    document.getElementById("v_notes").value = v.notes || "";
+    openModal("vendorModal");
+}
+
+async function submitVendorForm(e) {
+    e.preventDefault();
+    const fd = new FormData();
+    const vid = document.getElementById("v_id").value;
+    if (vid) fd.append("vendor_id", vid);
+    fd.append("vendor_code", document.getElementById("v_code").value.trim().toUpperCase());
+    fd.append("category", document.getElementById("v_category").value);
+    fd.append("avl_status", document.getElementById("v_status").value);
+    fd.append("vendor_name", document.getElementById("v_name").value.trim());
+    fd.append("products_services", document.getElementById("v_products").value.trim());
+    fd.append("contact_person", document.getElementById("v_contact").value.trim());
+    fd.append("phone", document.getElementById("v_phone").value.trim());
+    fd.append("email", document.getElementById("v_email").value.trim());
+    fd.append("tax_id", document.getElementById("v_tax_id").value.trim());
+    fd.append("iso_certified", document.getElementById("v_iso").value.trim());
+    fd.append("next_eval_date", document.getElementById("v_next_eval").value);
+    fd.append("address", document.getElementById("v_address").value.trim());
+    fd.append("notes", document.getElementById("v_notes").value.trim());
+
+    const certFile = document.getElementById("v_cert_file");
+    if (certFile.files && certFile.files.length > 0) {
+        fd.append("cert_file", certFile.files[0]);
+    }
+
+    const res = await fetch("/api/vendors", { method: "POST", headers: apiHeaders(), body: fd });
+    const data = await res.json();
+    closeModal("vendorModal");
+    await loadAvlData();
+    await loadDashboard();
+    showToast(data.message || "บันทึกข้อมูลผู้จัดจำหน่ายสำเร็จ");
+}
+
+async function deleteVendor(vendorId) {
+    if (!confirm("ยืนยันการลบผู้จัดจำหน่ายรายนี้ออกจากทะเบียน AVL?")) return;
+    await fetch(`/api/vendors/${vendorId}`, { method: "DELETE", headers: apiHeaders() });
+    await loadAvlData();
+    await loadDashboard();
+    showToast("ลบข้อมูลผู้จัดจำหน่ายเรียบร้อย");
+}
+
+function populateAvlVendorSelect() {
+    const sel = document.getElementById("ae_vendor_id");
+    if (!sel) return;
+    sel.innerHTML = allVendorsCache
+        .map((v) => `<option value="${v.id}">${v.vendor_code} - ${v.vendor_name} (${v.category})</option>`)
+        .join("");
+}
+
+function recalcAvlModalPreview() {
+    const sq = Math.max(0, Math.min(35, parseFloat(document.getElementById("ae_score_quality").value) || 0));
+    const ss = Math.max(0, Math.min(30, parseFloat(document.getElementById("ae_score_service").value) || 0));
+    const sc = Math.max(0, Math.min(20, parseFloat(document.getElementById("ae_score_cost").value) || 0));
+    const sco = Math.max(0, Math.min(15, parseFloat(document.getElementById("ae_score_coop").value) || 0));
+    const total = Math.round((sq + ss + sc + sco) * 100) / 100;
+
+    let grade = "-";
+    let action = "กรอกคะแนนเพื่อคำนวณระดับเกรด A / B / C / D ตามคู่มือ ข้อ 3.3";
+    if (total > 0 || document.getElementById("ae_status").value === "Completed") {
+        if (total >= 90) {
+            grade = "A";
+            action = "ระดับ A (90-100%): คุณภาพดีเยี่ยม คงสถานะพันธมิตรหลักและให้สิทธิพิเศษพิจารณาเป็นเจ้าแรกในการประมูลรอบถัดไป";
+        } else if (total >= 80) {
+            grade = "B";
+            action = "ระดับ B (80-89%): คุณภาพอยู่ในเกณฑ์มาตรฐาน แจ้ง Feedback ถึงจุดที่สามารถพัฒนาต่อได้";
+        } else if (total >= 70) {
+            grade = "C";
+            action = "ระดับ C (70-79%): ต้องออกเอกสารแจ้งเตือน (Corrective Action Request - CAR) ให้ทำแผนแก้ไขภายใน 30–60 วัน";
+        } else {
+            grade = "D";
+            action = "ระดับ D (< 70%): ระงับการสั่งซื้อใหม่ชั่วคราว หากไม่ปรับปรุงตามกำหนดให้ถอดชื่อออกจากทะเบียน AVL";
+        }
+        const warns = [];
+        if (sq < 28) warns.push(`ข้อ 1 คุณภาพ (${sq}%) ต่ำกว่าเกณฑ์คาดหวัง 28%`);
+        if (ss < 24) warns.push(`ข้อ 2 บริการ/SLA (${ss}%) ต่ำกว่าเกณฑ์คาดหวัง 24%`);
+        if (warns.length) action += ` [ข้อสังเกต: ${warns.join(", ")}]`;
+    }
+
+    document.getElementById("aePreviewTotalScore").textContent = `${total}%`;
+    document.getElementById("aePreviewGradeBadge").textContent = `Grade ${grade}`;
+    document.getElementById("aePreviewActionText").textContent = action;
+}
+
+function openAvlEvalModal() {
+    populateAvlVendorSelect();
+    document.getElementById("avlEvalForm").reset();
+    document.getElementById("ae_id").value = "";
+    const in25Days = new Date(Date.now() + 25 * 86400000).toISOString().split("T")[0];
+    document.getElementById("ae_planned_date").value = in25Days;
+    document.getElementById("ae_notify_days").value = 30;
+    document.getElementById("ae_notify_emails").value = "maintenance@sunlogis.com, watcharagorn@sunlogis.com";
+    document.getElementById("ae_status").value = "Scheduled";
+    recalcAvlModalPreview();
+    openModal("avlEvalModal");
+}
+
+function openAvlEvalModalForVendor(vendorId) {
+    openAvlEvalModal();
+    document.getElementById("ae_vendor_id").value = vendorId;
+    const v = allVendorsCache.find((x) => x.id === vendorId);
+    if (v) {
+        document.getElementById("ae_code").value = `AVL-EVAL-${v.vendor_code}-${new Date().getFullYear()}`;
+        document.getElementById("ae_period").value = `${new Date().getFullYear()}-Q4`;
+    }
+}
+
+function editAvlEval(evalId) {
+    populateAvlVendorSelect();
+    const ev = allAvlEvalsCache.find((x) => x.id === evalId);
+    if (!ev) return;
+    document.getElementById("ae_id").value = ev.id;
+    document.getElementById("ae_vendor_id").value = ev.vendor_id;
+    document.getElementById("ae_code").value = ev.eval_code;
+    document.getElementById("ae_period").value = ev.eval_period;
+    document.getElementById("ae_frequency").value = ev.frequency;
+    document.getElementById("ae_planned_date").value = ev.planned_date;
+    document.getElementById("ae_notify_days").value = ev.notify_days_before || 30;
+    document.getElementById("ae_notify_emails").value = ev.notify_emails || "";
+    document.getElementById("ae_status").value = ev.status;
+    document.getElementById("ae_score_quality").value = ev.score_quality || 0;
+    document.getElementById("ae_score_service").value = ev.score_service_sla || 0;
+    document.getElementById("ae_score_cost").value = ev.score_cost || 0;
+    document.getElementById("ae_score_coop").value = ev.score_cooperation || 0;
+    document.getElementById("ae_actual_date").value = ev.actual_date || new Date().toISOString().split("T")[0];
+    document.getElementById("ae_evaluator").value = ev.evaluator || (currentUser ? currentUser.full_name : "");
+    document.getElementById("ae_car_no").value = ev.car_no || "";
+    document.getElementById("ae_car_due").value = ev.car_due_date || "";
+    document.getElementById("ae_remarks").value = ev.remarks || "";
+    recalcAvlModalPreview();
+    openModal("avlEvalModal");
+}
+
+async function submitAvlEvalForm(e) {
+    e.preventDefault();
+    const fd = new FormData();
+    const eid = document.getElementById("ae_id").value;
+    if (eid) fd.append("eval_id", eid);
+    fd.append("vendor_id", document.getElementById("ae_vendor_id").value);
+    fd.append("eval_code", document.getElementById("ae_code").value.trim().toUpperCase());
+    fd.append("eval_period", document.getElementById("ae_period").value.trim());
+    fd.append("frequency", document.getElementById("ae_frequency").value);
+    fd.append("planned_date", document.getElementById("ae_planned_date").value);
+    fd.append("notify_days_before", document.getElementById("ae_notify_days").value);
+    fd.append("notify_emails", document.getElementById("ae_notify_emails").value.trim());
+
+    const sq = parseFloat(document.getElementById("ae_score_quality").value) || 0;
+    const ss = parseFloat(document.getElementById("ae_score_service").value) || 0;
+    const sc = parseFloat(document.getElementById("ae_score_cost").value) || 0;
+    const sco = parseFloat(document.getElementById("ae_score_coop").value) || 0;
+    let st = document.getElementById("ae_status").value;
+    if ((sq > 0 || ss > 0 || sc > 0 || sco > 0) && st === "Scheduled") {
+        st = "Completed";
+    }
+
+    fd.append("status", st);
+    fd.append("score_quality", sq);
+    fd.append("score_service_sla", ss);
+    fd.append("score_cost", sc);
+    fd.append("score_cooperation", sco);
+    fd.append("actual_date", document.getElementById("ae_actual_date").value);
+    fd.append("evaluator", document.getElementById("ae_evaluator").value.trim());
+    fd.append("car_no", document.getElementById("ae_car_no").value.trim());
+    fd.append("car_due_date", document.getElementById("ae_car_due").value);
+    fd.append("remarks", document.getElementById("ae_remarks").value.trim());
+
+    const evFile = document.getElementById("ae_evidence_file");
+    if (evFile.files && evFile.files.length > 0) {
+        fd.append("evidence_file", evFile.files[0]);
+    }
+
+    const res = await fetch("/api/avl-evaluations", { method: "POST", headers: apiHeaders(), body: fd });
+    const data = await res.json();
+    closeModal("avlEvalModal");
+    await loadAvlData();
+    await loadDashboard();
+    showToast(`${data.message} (คะแนนรวม: ${data.total_score}% | เกรด: ${data.grade})`);
+}
+
+async function deleteAvlEval(evalId) {
+    if (!confirm("ยืนยันการลบรายการประเมินนี้?")) return;
+    await fetch(`/api/avl-evaluations/${evalId}`, { method: "DELETE", headers: apiHeaders() });
+    await loadAvlData();
+    await loadDashboard();
+    showToast("ลบรายการประเมินเรียบร้อย");
+}
+
+async function triggerAvlAlertsNow(force = true) {
+    showToast("กำลังตรวจสอบแผนการประเมินผู้จัดจำหน่าย (AVL) ล่วงหน้า 30 วันและส่งอีเมลแจ้งเตือน...");
+    const res = await fetch(`/api/avl-evaluations/check-alerts?force=${force}`, { method: "POST", headers: apiHeaders() });
+    const data = await res.json();
+    await loadAvlData();
+    await loadEquipmentAndPm();
+    await loadDashboard();
+    showToast(`ส่งอีเมลแจ้งเตือนแผนประเมินผู้จัดจำหน่าย (AVL) ล่วงหน้า 30 วันจำนวน ${data.triggered_count} รายการเรียบร้อย`);
 }
