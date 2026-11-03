@@ -31,19 +31,21 @@ def send_smtp_email(
     if not recipients:
         return False, "ไม่พบรายชื่ออีเมลผู้รับ (Recipients)"
 
-    conn = get_db()
     if not smtp_host or not smtp_user or not smtp_password:
         # Log as Pending SMTP / Simulated Alert so user sees full audit trail even before entering SMTP password
         msg_detail = "สร้างรายการแจ้งเตือนในระบบแล้ว (กรุณาระบุ SMTP Username/Password ในหน้าตั้งค่าเพื่อส่งออกไปยัง Mail Server จริง)"
-        conn.execute(
-            """
-            INSERT INTO email_logs (pm_id, equip_code, recipients, subject, body_preview, status, error_message, sent_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (pm_id, equip_code, ", ".join(recipients), subject, html_body[:500], "Simulated (Pending SMTP Auth)", msg_detail, now_str),
-        )
-        conn.commit()
-        conn.close()
+        conn = get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO email_logs (pm_id, equip_code, recipients, subject, body_preview, status, error_message, sent_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (pm_id, equip_code, ", ".join(recipients), subject, html_body[:500], "Simulated (Pending SMTP Auth)", msg_detail, now_str),
+            )
+            conn.commit()
+        finally:
+            conn.close()
         return True, msg_detail
 
     try:
@@ -64,27 +66,33 @@ def send_smtp_email(
         server.sendmail(smtp_sender, recipients, msg.as_string())
         server.quit()
 
-        conn.execute(
-            """
-            INSERT INTO email_logs (pm_id, equip_code, recipients, subject, body_preview, status, error_message, sent_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (pm_id, equip_code, ", ".join(recipients), subject, html_body[:500], "Sent", "", now_str),
-        )
-        conn.commit()
-        conn.close()
+        conn = get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO email_logs (pm_id, equip_code, recipients, subject, body_preview, status, error_message, sent_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (pm_id, equip_code, ", ".join(recipients), subject, html_body[:500], "Sent", "", now_str),
+            )
+            conn.commit()
+        finally:
+            conn.close()
         return True, f"ส่งอีเมลแจ้งเตือนไปยัง {', '.join(recipients)} สำเร็จ"
     except Exception as e:
         err_str = str(e)
-        conn.execute(
-            """
-            INSERT INTO email_logs (pm_id, equip_code, recipients, subject, body_preview, status, error_message, sent_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (pm_id, equip_code, ", ".join(recipients), subject, html_body[:500], "Failed", err_str, now_str),
-        )
-        conn.commit()
-        conn.close()
+        conn = get_db()
+        try:
+            conn.execute(
+                """
+                INSERT INTO email_logs (pm_id, equip_code, recipients, subject, body_preview, status, error_message, sent_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (pm_id, equip_code, ", ".join(recipients), subject, html_body[:500], "Failed", err_str, now_str),
+            )
+            conn.commit()
+        finally:
+            conn.close()
         return False, f"ส่งอีเมลไม่สำเร็จ: {err_str}"
 
 

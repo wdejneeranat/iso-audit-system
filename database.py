@@ -26,8 +26,10 @@ def hash_password(password: str) -> str:
 
 
 def get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=60.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 60000")
+    conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -1004,17 +1006,21 @@ def init_db() -> None:
 
 def get_settings_dict() -> Dict[str, str]:
     conn = get_db()
-    rows = conn.execute("SELECT key, value FROM settings").fetchall()
-    conn.close()
-    return {r["key"]: r["value"] for r in rows}
+    try:
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+        return {r["key"]: r["value"] for r in rows}
+    finally:
+        conn.close()
 
 
 def update_settings_dict(new_settings: Dict[str, str]) -> None:
     conn = get_db()
-    for k, v in new_settings.items():
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (k, str(v)),
-        )
-    conn.commit()
-    conn.close()
+    try:
+        for k, v in new_settings.items():
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (k, str(v)),
+            )
+        conn.commit()
+    finally:
+        conn.close()

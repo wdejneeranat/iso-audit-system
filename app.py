@@ -1,8 +1,10 @@
 import os
 import re
 import json
+import time
 import sqlite3
 import asyncio
+import threading
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
@@ -78,17 +80,22 @@ def create_minimal_pdf(file_path: str, title_text: str, subtitle_text: str) -> N
         f.write(pdf_bytes)
 
 
-def sync_users_state_to_storage():
+def sync_users_state_to_storage(upload_async: bool = True):
     """
     Persist current `users` and `deleted_users` from SQLite DB to local storage
     AND Synology NAS (/DATA/ISO/System_DB/users_state.json) so user creations/deletions
-    survive container rebuilds and GitHub deployments.
+    survive container rebuilds and GitHub deployments without holding any DB lock.
     """
     try:
         conn = get_db()
-        users_rows = [dict(r) for r in conn.execute("SELECT * FROM users ORDER BY id ASC").fetchall()]
-        del_rows = [dict(r) for r in conn.execute("SELECT * FROM deleted_users").fetchall()]
-        conn.close()
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS deleted_users (username TEXT PRIMARY KEY, deleted_at TEXT NOT NULL)"
+            )
+            users_rows = [dict(r) for r in conn.execute("SELECT * FROM users ORDER BY id ASC").fetchall()]
+            del_rows = [dict(r) for r in conn.execute("SELECT * FROM deleted_users").fetchall()]
+        finally:
+            conn.close()
 
         state_dir = os.path.join(STORAGE_DIR, "ISO", "System_DB")
         os.makedirs(state_dir, exist_ok=True)
@@ -101,8 +108,17 @@ def sync_users_state_to_storage():
         with open(state_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
 
-        syno = get_synology_client()
-        syno.upload_file(state_file, "System_DB", "users_state.json")
+        def _upload_state():
+            try:
+                syno = get_synology_client()
+                syno.upload_file(state_file, "System_DB", "users_state.json")
+            except Exception:
+                pass
+
+        if upload_async:
+            threading.Thread(target=_upload_state, daemon=True).start()
+        else:
+            _upload_state()
     except Exception:
         pass
 
@@ -117,11 +133,16 @@ def restore_users_state_from_storage():
         os.makedirs(state_dir, exist_ok=True)
         state_file = os.path.join(state_dir, "users_state.json")
 
-        syno = get_synology_client()
-        ok, _ = syno.connect_and_login()
-        if ok and syno.resolved_root_path:
-            remote_state = f"{syno.resolved_root_path.rstrip('/')}/System_DB/users_state.json"
-            syno.download_file_to_local(remote_state, state_file)
+        # Only download from Synology if local state_file does not exist yet
+        if not os.path.exists(state_file):
+            try:
+                syno = get_synology_client()
+                ok, _ = syno.connect_and_login()
+                if ok and syno.resolved_root_path:
+                    remote_state = f"{syno.resolved_root_path.rstrip('/')}/System_DB/users_state.json"
+                    syno.download_file_to_local(remote_state, state_file)
+            except Exception:
+                pass
 
         if not os.path.exists(state_file):
             return
@@ -135,62 +156,91 @@ def restore_users_state_from_storage():
             return
 
         conn = get_db()
-        for d in saved_deleted:
-            if d.get("username"):
-                conn.execute(
-                    "INSERT OR REPLACE INTO deleted_users (username, deleted_at) VALUES (?, ?)",
-                    (d["username"], d.get("deleted_at", "")),
-                )
-
-        deleted_set = {d["username"].lower() for d in saved_deleted if d.get("username")}
-        # Remove any user in DB that was explicitly deleted
-        for uname_low in deleted_set:
-            conn.execute("DELETE FROM users WHERE LOWER(username) = ?", (uname_low,))
-
-        # Upsert all saved active users
-        saved_usernames_low = set()
-        for u in saved_users:
-            uname = (u.get("username") or "").strip()
-            if not uname or uname.lower() in deleted_set:
-                continue
-            saved_usernames_low.add(uname.lower())
+        try:
             conn.execute(
-                """
-                INSERT INTO users (username, password_hash, full_name, role, department, email, is_active, must_change_password, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(username) DO UPDATE SET
-                    password_hash = excluded.password_hash,
-                    full_name = excluded.full_name,
-                    role = excluded.role,
-                    department = excluded.department,
-                    email = excluded.email,
-                    is_active = excluded.is_active,
-                    must_change_password = excluded.must_change_password
-                """,
-                (
-                    uname,
-                    u.get("password_hash", ""),
-                    u.get("full_name", uname),
-                    u.get("role", "Viewer"),
-                    u.get("department", "General"),
-                    u.get("email", ""),
-                    int(u.get("is_active", 1)),
-                    int(u.get("must_change_password", 0)),
-                    u.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                ),
+                "CREATE TABLE IF NOT EXISTS deleted_users (username TEXT PRIMARY KEY, deleted_at TEXT NOT NULL)"
             )
-        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('users_initialized', '1')")
-        conn.commit()
-        conn.close()
+            for d in saved_deleted:
+                if d.get("username"):
+                    conn.execute(
+                        "INSERT OR REPLACE INTO deleted_users (username, deleted_at) VALUES (?, ?)",
+                        (d["username"], d.get("deleted_at", "")),
+                    )
+
+            deleted_set = {d["username"].lower() for d in saved_deleted if d.get("username")}
+            for uname_low in deleted_set:
+                conn.execute("DELETE FROM users WHERE LOWER(username) = ?", (uname_low,))
+
+            for u in saved_users:
+                uname = (u.get("username") or "").strip()
+                if not uname or uname.lower() in deleted_set:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO users (username, password_hash, full_name, role, department, email, is_active, must_change_password, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(username) DO UPDATE SET
+                        password_hash = excluded.password_hash,
+                        full_name = excluded.full_name,
+                        role = excluded.role,
+                        department = excluded.department,
+                        email = excluded.email,
+                        is_active = excluded.is_active,
+                        must_change_password = excluded.must_change_password
+                    """,
+                    (
+                        uname,
+                        u.get("password_hash", ""),
+                        u.get("full_name", uname),
+                        u.get("role", "Viewer"),
+                        u.get("department", "General"),
+                        u.get("email", ""),
+                        int(u.get("is_active", 1)),
+                        int(u.get("must_change_password", 0)),
+                        u.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                    ),
+                )
+            conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('users_initialized', '1')")
+            conn.commit()
+        finally:
+            conn.close()
     except Exception:
         pass
 
 
 def bootstrap_sample_files_and_synology():
-    """Ensure sample documents have local PDF files named by doc_code and sync to Synology."""
+    """
+    Ensure sample documents have local PDF files named by doc_code and sync to Synology.
+    IMPORTANT: Never keep a SQLite connection open while creating files or uploading to Synology!
+    """
     restore_users_state_from_storage()
+
     conn = get_db()
-    docs = conn.execute("SELECT id, doc_code, doc_title, revision_no, file_name, local_path, synology_synced FROM documents").fetchall()
+    try:
+        docs = [dict(r) for r in conn.execute("SELECT id, doc_code, doc_title, revision_no, file_name, local_path, synology_synced FROM documents").fetchall()]
+        emps = [dict(r) for r in conn.execute("SELECT id, emp_code, full_name, application_file_name, application_local_path FROM employees").fetchall()]
+        trs = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT t.id, t.course_code, t.status, t.evidence_file_name, t.evidence_local_path, e.emp_code FROM training_records t JOIN employees e ON t.emp_id = e.id WHERE t.status = 'Completed'"
+            ).fetchall()
+        ]
+        pms = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT p.id, p.pm_code, p.status, p.evidence_file_name, p.evidence_local_path, e.equip_code FROM pm_schedules p JOIN equipment e ON p.equip_id = e.id WHERE p.status = 'Completed'"
+            ).fetchall()
+        ]
+        vends = [dict(r) for r in conn.execute("SELECT id, vendor_code, vendor_name, cert_filename, local_cert_path FROM vendors").fetchall()]
+        vevals = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT ve.id, ve.eval_code, ve.status, ve.evidence_filename, ve.local_evidence_path, v.vendor_code FROM vendor_evaluations ve JOIN vendors v ON ve.vendor_id = v.id WHERE ve.status = 'Completed'"
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
     syno = get_synology_client()
 
     for d in docs:
@@ -203,122 +253,134 @@ def bootstrap_sample_files_and_synology():
                 f"Effective ISO Controlled Document - {d['doc_code']}",
             )
             up_res = syno.upload_file(local_p, "Documents", fname)
-            conn.execute(
-                """
-                UPDATE documents
-                SET file_name = ?, original_name = ?, local_path = ?, synology_path = ?, synology_synced = ?
-                WHERE id = ?
-                """,
-                (
-                    fname,
-                    fname,
-                    up_res["local_path"],
-                    up_res["synology_path"],
-                    1 if up_res["synology_synced"] else 0,
-                    d["id"],
-                ),
-            )
-            conn.execute(
-                """
-                UPDATE document_revisions
-                SET file_name = ?, local_path = ?, synology_path = ?
-                WHERE doc_id = ? AND revision_no = ?
-                """,
-                (fname, up_res["local_path"], up_res["synology_path"], d["id"], d["revision_no"]),
-            )
+            c = get_db()
+            try:
+                c.execute(
+                    """
+                    UPDATE documents
+                    SET file_name = ?, original_name = ?, local_path = ?, synology_path = ?, synology_synced = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        fname,
+                        fname,
+                        up_res["local_path"],
+                        up_res["synology_path"],
+                        1 if up_res["synology_synced"] else 0,
+                        d["id"],
+                    ),
+                )
+                c.execute(
+                    """
+                    UPDATE document_revisions
+                    SET file_name = ?, local_path = ?, synology_path = ?
+                    WHERE doc_id = ? AND revision_no = ?
+                    """,
+                    (fname, up_res["local_path"], up_res["synology_path"], d["id"], d["revision_no"]),
+                )
+                c.commit()
+            finally:
+                c.close()
 
-    # Also bootstrap sample Employee Job Application PDFs
-    emps = conn.execute("SELECT id, emp_code, full_name, application_file_name, application_local_path FROM employees").fetchall()
     for e in emps:
         if not e["application_file_name"] or not e["application_local_path"] or not os.path.exists(e["application_local_path"]):
             fname = f"{e['emp_code']}_Application.pdf"
             local_p = os.path.join(STORAGE_DIR, "ISO", "HR_Employees", e["emp_code"], "Application", fname)
             create_minimal_pdf(local_p, f"Job Application: {e['emp_code']}", f"Employee: {e['full_name']}")
             up_res = syno.upload_file(local_p, f"HR_Employees/{e['emp_code']}/Application", fname)
-            conn.execute(
-                """
-                UPDATE employees
-                SET application_file_name = ?, application_local_path = ?, application_synology_path = ?, application_synced = ?
-                WHERE id = ?
-                """,
-                (fname, up_res["local_path"], up_res["synology_path"], 1 if up_res["synology_synced"] else 0, e["id"]),
-            )
+            c = get_db()
+            try:
+                c.execute(
+                    """
+                    UPDATE employees
+                    SET application_file_name = ?, application_local_path = ?, application_synology_path = ?, application_synced = ?
+                    WHERE id = ?
+                    """,
+                    (fname, up_res["local_path"], up_res["synology_path"], 1 if up_res["synology_synced"] else 0, e["id"]),
+                )
+                c.commit()
+            finally:
+                c.close()
 
-    # Also bootstrap sample Training Evidence PDFs for Completed trainings
-    trs = conn.execute(
-        "SELECT t.id, t.course_code, t.status, t.evidence_file_name, t.evidence_local_path, e.emp_code FROM training_records t JOIN employees e ON t.emp_id = e.id WHERE t.status = 'Completed'"
-    ).fetchall()
     for t in trs:
         if not t["evidence_file_name"] or not t["evidence_local_path"] or not os.path.exists(t["evidence_local_path"]):
             fname = f"{t['emp_code']}_{t['course_code']}_Evidence.pdf"
             local_p = os.path.join(STORAGE_DIR, "ISO", "HR_Employees", t["emp_code"], "Training", fname)
             create_minimal_pdf(local_p, f"Training Record & Certificate: {t['course_code']}", f"Employee: {t['emp_code']} - Status: Completed")
             up_res = syno.upload_file(local_p, f"HR_Employees/{t['emp_code']}/Training", fname)
-            conn.execute(
-                """
-                UPDATE training_records
-                SET evidence_file_name = ?, evidence_local_path = ?, evidence_synology_path = ?, evidence_synced = ?
-                WHERE id = ?
-                """,
-                (fname, up_res["local_path"], up_res["synology_path"], 1 if up_res["synology_synced"] else 0, t["id"]),
-            )
+            c = get_db()
+            try:
+                c.execute(
+                    """
+                    UPDATE training_records
+                    SET evidence_file_name = ?, evidence_local_path = ?, evidence_synology_path = ?, evidence_synced = ?
+                    WHERE id = ?
+                    """,
+                    (fname, up_res["local_path"], up_res["synology_path"], 1 if up_res["synology_synced"] else 0, t["id"]),
+                )
+                c.commit()
+            finally:
+                c.close()
 
-    # Also bootstrap sample PM Evidence PDF for Completed PM schedules
-    pms = conn.execute(
-        "SELECT p.id, p.pm_code, p.status, p.evidence_file_name, p.evidence_local_path, e.equip_code FROM pm_schedules p JOIN equipment e ON p.equip_id = e.id WHERE p.status = 'Completed'"
-    ).fetchall()
     for p in pms:
         if not p["evidence_file_name"] or not p["evidence_local_path"] or not os.path.exists(p["evidence_local_path"]):
             fname = f"{p['equip_code']}_{p['pm_code']}_Evidence.pdf"
             local_p = os.path.join(STORAGE_DIR, "ISO", "MHE_Maintenance", p["equip_code"], fname)
             create_minimal_pdf(local_p, f"PM Service Report: {p['pm_code']}", f"Equipment: {p['equip_code']} - Preventive Maintenance Completed")
             up_res = syno.upload_file(local_p, f"MHE_Maintenance/{p['equip_code']}", fname)
-            conn.execute(
-                """
-                UPDATE pm_schedules
-                SET evidence_file_name = ?, evidence_local_path = ?, evidence_synology_path = ?, evidence_synced = ?
-                WHERE id = ?
-                """,
-                (fname, up_res["local_path"], up_res["synology_path"], 1 if up_res["synology_synced"] else 0, p["id"]),
-            )
+            c = get_db()
+            try:
+                c.execute(
+                    """
+                    UPDATE pm_schedules
+                    SET evidence_file_name = ?, evidence_local_path = ?, evidence_synology_path = ?, evidence_synced = ?
+                    WHERE id = ?
+                    """,
+                    (fname, up_res["local_path"], up_res["synology_path"], 1 if up_res["synology_synced"] else 0, p["id"]),
+                )
+                c.commit()
+            finally:
+                c.close()
 
-    # Also bootstrap sample Vendor Certificates & Evaluation Evidence PDFs
-    vends = conn.execute("SELECT id, vendor_code, vendor_name, cert_filename, local_cert_path FROM vendors").fetchall()
     for v in vends:
         if not v["cert_filename"] or not v["local_cert_path"] or not os.path.exists(v["local_cert_path"]):
             fname = f"{v['vendor_code']}_Certificate.pdf"
             local_p = os.path.join(STORAGE_DIR, "ISO", "AVL_Vendors", v["vendor_code"], fname)
             create_minimal_pdf(local_p, f"AVL Vendor Certificate: {v['vendor_code']}", f"Vendor: {v['vendor_name']}")
             up_res = syno.upload_file(local_p, f"AVL_Vendors/{v['vendor_code']}", fname)
-            conn.execute(
-                """
-                UPDATE vendors
-                SET cert_filename = ?, local_cert_path = ?, synology_cert_path = ?
-                WHERE id = ?
-                """,
-                (fname, up_res["local_path"], up_res["synology_path"], v["id"]),
-            )
+            c = get_db()
+            try:
+                c.execute(
+                    """
+                    UPDATE vendors
+                    SET cert_filename = ?, local_cert_path = ?, synology_cert_path = ?
+                    WHERE id = ?
+                    """,
+                    (fname, up_res["local_path"], up_res["synology_path"], v["id"]),
+                )
+                c.commit()
+            finally:
+                c.close()
 
-    vevals = conn.execute(
-        "SELECT ve.id, ve.eval_code, ve.status, ve.evidence_filename, ve.local_evidence_path, v.vendor_code FROM vendor_evaluations ve JOIN vendors v ON ve.vendor_id = v.id WHERE ve.status = 'Completed'"
-    ).fetchall()
     for ve in vevals:
         if not ve["evidence_filename"] or not ve["local_evidence_path"] or not os.path.exists(ve["local_evidence_path"]):
             fname = f"{ve['vendor_code']}_{ve['eval_code']}_EvalReport.pdf"
             local_p = os.path.join(STORAGE_DIR, "ISO", "AVL_Vendors", ve["vendor_code"], "Evaluations", fname)
             create_minimal_pdf(local_p, f"Supplier Evaluation Report: {ve['eval_code']}", f"Vendor: {ve['vendor_code']} - Section 3.2 & 3.3")
             up_res = syno.upload_file(local_p, f"AVL_Vendors/{ve['vendor_code']}/Evaluations", fname)
-            conn.execute(
-                """
-                UPDATE vendor_evaluations
-                SET evidence_filename = ?, local_evidence_path = ?, synology_evidence_path = ?
-                WHERE id = ?
-                """,
-                (fname, up_res["local_path"], up_res["synology_path"], ve["id"]),
-            )
-
-    conn.commit()
-    conn.close()
+            c = get_db()
+            try:
+                c.execute(
+                    """
+                    UPDATE vendor_evaluations
+                    SET evidence_filename = ?, local_evidence_path = ?, synology_evidence_path = ?
+                    WHERE id = ?
+                    """,
+                    (fname, up_res["local_path"], up_res["synology_path"], ve["id"]),
+                )
+                c.commit()
+            finally:
+                c.close()
 
 
 async def periodic_pm_alert_scheduler():
@@ -448,24 +510,24 @@ def change_password(payload: ChangePasswordRequest):
         raise HTTPException(status_code=400, detail="รหัสผ่านใหม่ต้องไม่ซ้ำกับรหัสผ่านเดิม")
 
     conn = get_db()
-    user = conn.execute(
-        "SELECT id, username, password_hash FROM users WHERE username = ?",
-        (payload.username.strip(),),
-    ).fetchone()
-    if not user:
-        conn.close()
-        raise HTTPException(status_code=404, detail="ไม่พบผู้ใช้งาน")
-    if user["password_hash"] != hash_password(payload.current_password):
-        conn.close()
-        raise HTTPException(status_code=401, detail="รหัสผ่านปัจจุบันไม่ถูกต้อง")
+    try:
+        user = conn.execute(
+            "SELECT id, username, password_hash FROM users WHERE LOWER(username) = LOWER(?)",
+            (payload.username.strip(),),
+        ).fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="ไม่พบผู้ใช้งาน")
+        if user["password_hash"] != hash_password(payload.current_password):
+            raise HTTPException(status_code=401, detail="รหัสผ่านปัจจุบันไม่ถูกต้อง")
 
-    conn.execute(
-        "UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?",
-        (hash_password(new_pw), user["id"]),
-    )
-    conn.commit()
-    conn.close()
-    sync_users_state_to_storage()
+        conn.execute(
+            "UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?",
+            (hash_password(new_pw), user["id"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    sync_users_state_to_storage(upload_async=True)
     return {"success": True, "message": "เปลี่ยนรหัสผ่านสำเร็จเรียบร้อย"}
 
 
@@ -473,9 +535,11 @@ def change_password(payload: ChangePasswordRequest):
 def list_users(request: Request):
     require_admin(request)
     conn = get_db()
-    rows = conn.execute("SELECT id, username, full_name, role, department, email, is_active, must_change_password, created_at FROM users ORDER BY id ASC").fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        rows = conn.execute("SELECT id, username, full_name, role, department, email, is_active, must_change_password, created_at FROM users ORDER BY id ASC").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 class CreateUserRequest(BaseModel):
@@ -490,32 +554,49 @@ class CreateUserRequest(BaseModel):
 @app.post("/api/users")
 def create_user(request: Request, payload: CreateUserRequest):
     require_admin(request)
-    conn = get_db()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     clean_uname = payload.username.strip()
-    try:
-        conn.execute("DELETE FROM deleted_users WHERE LOWER(username) = LOWER(?)", (clean_uname,))
-        conn.execute(
-            """
-            INSERT INTO users (username, password_hash, full_name, role, department, email, is_active, must_change_password, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)
-            """,
-            (
-                clean_uname,
-                hash_password(payload.password),
-                payload.full_name.strip(),
-                payload.role,
-                payload.department.strip(),
-                payload.email.strip(),
-                now_str,
-            ),
-        )
-        conn.commit()
-    except Exception as e:
-        conn.close()
-        raise HTTPException(status_code=400, detail=f"ไม่สามารถสร้างผู้ใช้ได้: {e}")
-    conn.close()
-    sync_users_state_to_storage()
+    if not clean_uname or not payload.password.strip():
+        raise HTTPException(status_code=400, detail="กรุณาระบุชื่อผู้ใช้งาน (Username) และรหัสผ่าน")
+
+    last_err = None
+    for attempt in range(3):
+        conn = get_db()
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS deleted_users (username TEXT PRIMARY KEY, deleted_at TEXT NOT NULL)"
+            )
+            conn.execute("DELETE FROM deleted_users WHERE LOWER(username) = LOWER(?)", (clean_uname,))
+            conn.execute(
+                """
+                INSERT INTO users (username, password_hash, full_name, role, department, email, is_active, must_change_password, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)
+                """,
+                (
+                    clean_uname,
+                    hash_password(payload.password),
+                    payload.full_name.strip(),
+                    payload.role,
+                    payload.department.strip(),
+                    payload.email.strip(),
+                    now_str,
+                ),
+            )
+            conn.commit()
+            last_err = None
+            break
+        except sqlite3.OperationalError as e:
+            last_err = e
+            time.sleep(0.5)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"ไม่สามารถสร้างผู้ใช้ได้: {e}")
+        finally:
+            conn.close()
+
+    if last_err is not None:
+        raise HTTPException(status_code=400, detail=f"ไม่สามารถสร้างผู้ใช้ได้: {last_err}")
+
+    sync_users_state_to_storage(upload_async=True)
     return {"success": True, "message": "เพิ่มผู้ใช้งานสำเร็จ (ผู้ใช้จะต้องเปลี่ยนรหัสผ่านเมื่อเข้าสู่ระบบครั้งแรก)"}
 
 
@@ -523,23 +604,26 @@ def create_user(request: Request, payload: CreateUserRequest):
 def delete_user(user_id: int, request: Request):
     current_admin = require_admin(request)
     conn = get_db()
-    target = conn.execute("SELECT id, username FROM users WHERE id = ?", (user_id,)).fetchone()
-    if not target:
-        conn.close()
-        raise HTTPException(status_code=404, detail="ไม่พบผู้ใช้งาน")
-    if target["username"].lower() == (current_admin.get("username") or "").lower():
-        conn.close()
-        raise HTTPException(status_code=400, detail="ไม่สามารถลบบัญชีที่คุณกำลังใช้งานอยู่ได้")
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS deleted_users (username TEXT PRIMARY KEY, deleted_at TEXT NOT NULL)"
+        )
+        target = conn.execute("SELECT id, username FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="ไม่พบผู้ใช้งาน")
+        if target["username"].lower() == (current_admin.get("username") or "").lower():
+            raise HTTPException(status_code=400, detail="ไม่สามารถลบบัญชีที่คุณกำลังใช้งานอยู่ได้")
 
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    conn.execute(
-        "INSERT OR REPLACE INTO deleted_users (username, deleted_at) VALUES (?, ?)",
-        (target["username"], now_str),
-    )
-    conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
-    conn.commit()
-    conn.close()
-    sync_users_state_to_storage()
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "INSERT OR REPLACE INTO deleted_users (username, deleted_at) VALUES (?, ?)",
+            (target["username"], now_str),
+        )
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    sync_users_state_to_storage(upload_async=True)
     return {"success": True}
 
 
@@ -642,13 +726,17 @@ async def create_or_update_document(
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     conn = get_db()
-    if not clean_code or clean_code == "AUTO":
-        clean_code = generate_next_doc_code(conn, category, dept_code)
-    existing = None
-    if doc_id:
-        existing = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
-    else:
-        existing = conn.execute("SELECT * FROM documents WHERE doc_code = ?", (clean_code,)).fetchone()
+    try:
+        if not clean_code or clean_code == "AUTO":
+            clean_code = generate_next_doc_code(conn, category, dept_code)
+        existing_row = None
+        if doc_id:
+            existing_row = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
+        else:
+            existing_row = conn.execute("SELECT * FROM documents WHERE doc_code = ?", (clean_code,)).fetchone()
+        existing = dict(existing_row) if existing_row else None
+    finally:
+        conn.close()
 
     file_name = existing["file_name"] if existing else ""
     original_name = existing["original_name"] if existing else ""
@@ -684,110 +772,112 @@ async def create_or_update_document(
         synology_synced = 1 if up_res["synology_synced"] else 0
         sync_msg = up_res["message"]
 
-    if existing:
-        target_id = existing["id"]
-        # If doc_code changed and a file exists, rename file to new doc_code
-        if existing["doc_code"] != clean_code and local_path and os.path.exists(local_path) and not (file and file.filename):
-            file_name = sanitize_code_filename(clean_code, local_path)
-            new_local = os.path.join(STORAGE_DIR, "ISO", "Documents", file_name)
-            os.replace(local_path, new_local)
-            local_path = new_local
-            syno = get_synology_client()
-            up_res = syno.upload_file(local_path, "Documents", file_name)
-            synology_path = up_res["synology_path"]
-            synology_synced = 1 if up_res["synology_synced"] else 0
+    if existing and existing["doc_code"] != clean_code and local_path and os.path.exists(local_path) and not (file and file.filename):
+        file_name = sanitize_code_filename(clean_code, local_path)
+        new_local = os.path.join(STORAGE_DIR, "ISO", "Documents", file_name)
+        os.replace(local_path, new_local)
+        local_path = new_local
+        syno = get_synology_client()
+        up_res = syno.upload_file(local_path, "Documents", file_name)
+        synology_path = up_res["synology_path"]
+        synology_synced = 1 if up_res["synology_synced"] else 0
 
+    conn = get_db()
+    try:
+        if existing:
+            target_id = existing["id"]
+            conn.execute(
+                """
+                UPDATE documents
+                SET doc_code = ?, doc_title = ?, category = ?, effective_date = ?,
+                    revision_no = ?, revision_date = ?, status = ?, confidentiality = ?,
+                    allowed_roles = ?, allowed_departments = ?, allowed_users = ?,
+                    file_name = ?, original_name = ?, local_path = ?, synology_path = ?,
+                    synology_synced = ?, uploaded_by = ?, notes = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    clean_code,
+                    doc_title.strip(),
+                    category,
+                    effective_date,
+                    revision_no,
+                    revision_date,
+                    status,
+                    confidentiality,
+                    allowed_roles,
+                    allowed_departments,
+                    allowed_users,
+                    file_name,
+                    original_name,
+                    local_path,
+                    synology_path,
+                    synology_synced,
+                    user["username"],
+                    notes,
+                    now_str,
+                    target_id,
+                ),
+            )
+        else:
+            cur = conn.execute(
+                """
+                INSERT INTO documents (
+                    doc_code, doc_title, category, effective_date, revision_no, revision_date,
+                    status, confidentiality, allowed_roles, allowed_departments, allowed_users,
+                    file_name, original_name, local_path, synology_path, synology_synced,
+                    uploaded_by, notes, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    clean_code,
+                    doc_title.strip(),
+                    category,
+                    effective_date,
+                    revision_no,
+                    revision_date,
+                    status,
+                    confidentiality,
+                    allowed_roles,
+                    allowed_departments,
+                    allowed_users,
+                    file_name,
+                    original_name,
+                    local_path,
+                    synology_path,
+                    synology_synced,
+                    user["username"],
+                    notes,
+                    now_str,
+                ),
+            )
+            target_id = cur.lastrowid
+
+        # Record revision history
         conn.execute(
             """
-            UPDATE documents
-            SET doc_code = ?, doc_title = ?, category = ?, effective_date = ?,
-                revision_no = ?, revision_date = ?, status = ?, confidentiality = ?,
-                allowed_roles = ?, allowed_departments = ?, allowed_users = ?,
-                file_name = ?, original_name = ?, local_path = ?, synology_path = ?,
-                synology_synced = ?, uploaded_by = ?, notes = ?, updated_at = ?
-            WHERE id = ?
+            INSERT INTO document_revisions (
+                doc_id, doc_code, revision_no, effective_date, revision_date,
+                change_summary, file_name, local_path, synology_path, updated_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                clean_code,
-                doc_title.strip(),
-                category,
-                effective_date,
-                revision_no,
-                revision_date,
-                status,
-                confidentiality,
-                allowed_roles,
-                allowed_departments,
-                allowed_users,
-                file_name,
-                original_name,
-                local_path,
-                synology_path,
-                synology_synced,
-                user["username"],
-                notes,
-                now_str,
                 target_id,
-            ),
-        )
-    else:
-        cur = conn.execute(
-            """
-            INSERT INTO documents (
-                doc_code, doc_title, category, effective_date, revision_no, revision_date,
-                status, confidentiality, allowed_roles, allowed_departments, allowed_users,
-                file_name, original_name, local_path, synology_path, synology_synced,
-                uploaded_by, notes, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
                 clean_code,
-                doc_title.strip(),
-                category,
-                effective_date,
                 revision_no,
+                effective_date,
                 revision_date,
-                status,
-                confidentiality,
-                allowed_roles,
-                allowed_departments,
-                allowed_users,
+                change_summary or f"Revision {revision_no:02d}",
                 file_name,
-                original_name,
                 local_path,
                 synology_path,
-                synology_synced,
                 user["username"],
-                notes,
                 now_str,
             ),
         )
-        target_id = cur.lastrowid
-
-    # Record revision history
-    conn.execute(
-        """
-        INSERT INTO document_revisions (
-            doc_id, doc_code, revision_no, effective_date, revision_date,
-            change_summary, file_name, local_path, synology_path, updated_by, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            target_id,
-            clean_code,
-            revision_no,
-            effective_date,
-            revision_date,
-            change_summary or f"Revision {revision_no:02d}",
-            file_name,
-            local_path,
-            synology_path,
-            user["username"],
-            now_str,
-        ),
-    )
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
 
     return {
         "success": True,
@@ -926,12 +1016,15 @@ async def save_employee(
     clean_code = emp_code.strip().upper()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_db()
-
-    existing = None
-    if emp_id:
-        existing = conn.execute("SELECT * FROM employees WHERE id = ?", (emp_id,)).fetchone()
-    else:
-        existing = conn.execute("SELECT * FROM employees WHERE emp_code = ?", (clean_code,)).fetchone()
+    try:
+        existing_row = None
+        if emp_id:
+            existing_row = conn.execute("SELECT * FROM employees WHERE id = ?", (emp_id,)).fetchone()
+        else:
+            existing_row = conn.execute("SELECT * FROM employees WHERE emp_code = ?", (clean_code,)).fetchone()
+        existing = dict(existing_row) if existing_row else None
+    finally:
+        conn.close()
 
     app_fname = existing["application_file_name"] if existing else ""
     app_local = existing["application_local_path"] if existing else ""
@@ -957,66 +1050,69 @@ async def save_employee(
         app_up_at = now_str
         msg = up_res["message"]
 
-    if existing:
-        target_emp_id = existing["id"]
-        conn.execute(
-            """
-            UPDATE employees
-            SET emp_code = ?, full_name = ?, department = ?, position = ?, hire_date = ?,
-                email = ?, phone = ?, status = ?, application_file_name = ?,
-                application_local_path = ?, application_synology_path = ?,
-                application_synced = ?, application_uploaded_at = ?, notes = ?
-            WHERE id = ?
-            """,
-            (
-                clean_code,
-                full_name.strip(),
-                department.strip(),
-                position.strip(),
-                hire_date,
-                email.strip(),
-                phone.strip(),
-                status,
-                app_fname,
-                app_local,
-                app_syno,
-                app_synced,
-                app_up_at,
-                notes,
-                target_emp_id,
-            ),
-        )
-    else:
-        cur = conn.execute(
-            """
-            INSERT INTO employees (
-                emp_code, full_name, department, position, hire_date, email, phone, status,
-                application_file_name, application_local_path, application_synology_path,
-                application_synced, application_uploaded_at, notes, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                clean_code,
-                full_name.strip(),
-                department.strip(),
-                position.strip(),
-                hire_date,
-                email.strip(),
-                phone.strip(),
-                status,
-                app_fname,
-                app_local,
-                app_syno,
-                app_synced,
-                app_up_at,
-                notes,
-                now_str,
-            ),
-        )
-        target_emp_id = cur.lastrowid
+    conn = get_db()
+    try:
+        if existing:
+            target_emp_id = existing["id"]
+            conn.execute(
+                """
+                UPDATE employees
+                SET emp_code = ?, full_name = ?, department = ?, position = ?, hire_date = ?,
+                    email = ?, phone = ?, status = ?, application_file_name = ?,
+                    application_local_path = ?, application_synology_path = ?,
+                    application_synced = ?, application_uploaded_at = ?, notes = ?
+                WHERE id = ?
+                """,
+                (
+                    clean_code,
+                    full_name.strip(),
+                    department.strip(),
+                    position.strip(),
+                    hire_date,
+                    email.strip(),
+                    phone.strip(),
+                    status,
+                    app_fname,
+                    app_local,
+                    app_syno,
+                    app_synced,
+                    app_up_at,
+                    notes,
+                    target_emp_id,
+                ),
+            )
+        else:
+            cur = conn.execute(
+                """
+                INSERT INTO employees (
+                    emp_code, full_name, department, position, hire_date, email, phone, status,
+                    application_file_name, application_local_path, application_synology_path,
+                    application_synced, application_uploaded_at, notes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    clean_code,
+                    full_name.strip(),
+                    department.strip(),
+                    position.strip(),
+                    hire_date,
+                    email.strip(),
+                    phone.strip(),
+                    status,
+                    app_fname,
+                    app_local,
+                    app_syno,
+                    app_synced,
+                    app_up_at,
+                    notes,
+                    now_str,
+                ),
+            )
+            target_emp_id = cur.lastrowid
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
     return {"success": True, "emp_id": target_emp_id, "message": msg}
 
 
@@ -1049,14 +1145,18 @@ async def save_training_record(
 ):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_db()
-    emp = conn.execute("SELECT * FROM employees WHERE id = ?", (emp_id,)).fetchone()
-    if not emp:
-        conn.close()
-        raise HTTPException(status_code=404, detail="ไม่พบข้อมูลพนักงาน")
+    try:
+        emp_row = conn.execute("SELECT * FROM employees WHERE id = ?", (emp_id,)).fetchone()
+        if not emp_row:
+            raise HTTPException(status_code=404, detail="ไม่พบข้อมูลพนักงาน")
+        emp = dict(emp_row)
 
-    existing = None
-    if training_id:
-        existing = conn.execute("SELECT * FROM training_records WHERE id = ?", (training_id,)).fetchone()
+        existing_row = None
+        if training_id:
+            existing_row = conn.execute("SELECT * FROM training_records WHERE id = ?", (training_id,)).fetchone()
+        existing = dict(existing_row) if existing_row else None
+    finally:
+        conn.close()
 
     ev_fname = existing["evidence_file_name"] if existing else ""
     ev_local = existing["evidence_local_path"] if existing else ""
@@ -1081,67 +1181,70 @@ async def save_training_record(
         ev_synced = 1 if up_res["synology_synced"] else 0
         msg = up_res["message"]
 
-    if existing:
-        conn.execute(
-            """
-            UPDATE training_records
-            SET course_code = ?, course_title = ?, training_type = ?, planned_date = ?,
-                actual_date = ?, duration_hours = ?, trainer = ?, status = ?,
-                evaluation_result = ?, score = ?, evidence_file_name = ?,
-                evidence_local_path = ?, evidence_synology_path = ?, evidence_synced = ?, remarks = ?
-            WHERE id = ?
-            """,
-            (
-                course_code.strip(),
-                course_title.strip(),
-                training_type,
-                planned_date,
-                actual_date,
-                duration_hours,
-                trainer.strip(),
-                status,
-                evaluation_result,
-                score.strip(),
-                ev_fname,
-                ev_local,
-                ev_syno,
-                ev_synced,
-                remarks,
-                training_id,
-            ),
-        )
-    else:
-        conn.execute(
-            """
-            INSERT INTO training_records (
-                emp_id, course_code, course_title, training_type, planned_date, actual_date,
-                duration_hours, trainer, status, evaluation_result, score,
-                evidence_file_name, evidence_local_path, evidence_synology_path, evidence_synced,
-                remarks, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                emp_id,
-                course_code.strip(),
-                course_title.strip(),
-                training_type,
-                planned_date,
-                actual_date,
-                duration_hours,
-                trainer.strip(),
-                status,
-                evaluation_result,
-                score.strip(),
-                ev_fname,
-                ev_local,
-                ev_syno,
-                ev_synced,
-                remarks,
-                now_str,
-            ),
-        )
-    conn.commit()
-    conn.close()
+    conn = get_db()
+    try:
+        if existing:
+            conn.execute(
+                """
+                UPDATE training_records
+                SET course_code = ?, course_title = ?, training_type = ?, planned_date = ?,
+                    actual_date = ?, duration_hours = ?, trainer = ?, status = ?,
+                    evaluation_result = ?, score = ?, evidence_file_name = ?,
+                    evidence_local_path = ?, evidence_synology_path = ?, evidence_synced = ?, remarks = ?
+                WHERE id = ?
+                """,
+                (
+                    course_code.strip(),
+                    course_title.strip(),
+                    training_type,
+                    planned_date,
+                    actual_date,
+                    duration_hours,
+                    trainer.strip(),
+                    status,
+                    evaluation_result,
+                    score.strip(),
+                    ev_fname,
+                    ev_local,
+                    ev_syno,
+                    ev_synced,
+                    remarks,
+                    training_id,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO training_records (
+                    emp_id, course_code, course_title, training_type, planned_date, actual_date,
+                    duration_hours, trainer, status, evaluation_result, score,
+                    evidence_file_name, evidence_local_path, evidence_synology_path, evidence_synced,
+                    remarks, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    emp_id,
+                    course_code.strip(),
+                    course_title.strip(),
+                    training_type,
+                    planned_date,
+                    actual_date,
+                    duration_hours,
+                    trainer.strip(),
+                    status,
+                    evaluation_result,
+                    score.strip(),
+                    ev_fname,
+                    ev_local,
+                    ev_syno,
+                    ev_synced,
+                    remarks,
+                    now_str,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
     return {"success": True, "message": msg}
 
 
@@ -1324,14 +1427,18 @@ async def save_pm_schedule(
 ):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_db()
-    eq = conn.execute("SELECT * FROM equipment WHERE id = ?", (equip_id,)).fetchone()
-    if not eq:
-        conn.close()
-        raise HTTPException(status_code=404, detail="ไม่พบข้อมูลอุปกรณ์")
+    try:
+        eq_row = conn.execute("SELECT * FROM equipment WHERE id = ?", (equip_id,)).fetchone()
+        if not eq_row:
+            raise HTTPException(status_code=404, detail="ไม่พบข้อมูลอุปกรณ์")
+        eq = dict(eq_row)
 
-    existing = None
-    if pm_id:
-        existing = conn.execute("SELECT * FROM pm_schedules WHERE id = ?", (pm_id,)).fetchone()
+        existing_row = None
+        if pm_id:
+            existing_row = conn.execute("SELECT * FROM pm_schedules WHERE id = ?", (pm_id,)).fetchone()
+        existing = dict(existing_row) if existing_row else None
+    finally:
+        conn.close()
 
     ev_fname = existing["evidence_file_name"] if existing else ""
     ev_local = existing["evidence_local_path"] if existing else ""
@@ -1356,67 +1463,70 @@ async def save_pm_schedule(
         ev_synced = 1 if up_res["synology_synced"] else 0
         msg = up_res["message"]
 
-    if existing:
-        conn.execute(
-            """
-            UPDATE pm_schedules
-            SET equip_id = ?, pm_code = ?, pm_title = ?, frequency = ?, planned_date = ?,
-                notify_days_before = ?, notify_emails = ?, status = ?, actual_date = ?,
-                performed_by = ?, result_summary = ?, cost = ?,
-                evidence_file_name = ?, evidence_local_path = ?, evidence_synology_path = ?, evidence_synced = ?
-            WHERE id = ?
-            """,
-            (
-                equip_id,
-                pm_code.strip().upper(),
-                pm_title.strip(),
-                frequency,
-                planned_date,
-                notify_days_before,
-                notify_emails.strip() or eq["responsible_email"],
-                status,
-                actual_date,
-                performed_by.strip(),
-                result_summary.strip(),
-                cost,
-                ev_fname,
-                ev_local,
-                ev_syno,
-                ev_synced,
-                pm_id,
-            ),
-        )
-    else:
-        conn.execute(
-            """
-            INSERT INTO pm_schedules (
-                equip_id, pm_code, pm_title, frequency, planned_date, notify_days_before,
-                notify_emails, status, actual_date, performed_by, result_summary, cost,
-                evidence_file_name, evidence_local_path, evidence_synology_path, evidence_synced, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                equip_id,
-                pm_code.strip().upper(),
-                pm_title.strip(),
-                frequency,
-                planned_date,
-                notify_days_before,
-                notify_emails.strip() or eq["responsible_email"],
-                status,
-                actual_date,
-                performed_by.strip(),
-                result_summary.strip(),
-                cost,
-                ev_fname,
-                ev_local,
-                ev_syno,
-                ev_synced,
-                now_str,
-            ),
-        )
-    conn.commit()
-    conn.close()
+    conn = get_db()
+    try:
+        if existing:
+            conn.execute(
+                """
+                UPDATE pm_schedules
+                SET equip_id = ?, pm_code = ?, pm_title = ?, frequency = ?, planned_date = ?,
+                    notify_days_before = ?, notify_emails = ?, status = ?, actual_date = ?,
+                    performed_by = ?, result_summary = ?, cost = ?,
+                    evidence_file_name = ?, evidence_local_path = ?, evidence_synology_path = ?, evidence_synced = ?
+                WHERE id = ?
+                """,
+                (
+                    equip_id,
+                    pm_code.strip().upper(),
+                    pm_title.strip(),
+                    frequency,
+                    planned_date,
+                    notify_days_before,
+                    notify_emails.strip() or eq["responsible_email"],
+                    status,
+                    actual_date,
+                    performed_by.strip(),
+                    result_summary.strip(),
+                    cost,
+                    ev_fname,
+                    ev_local,
+                    ev_syno,
+                    ev_synced,
+                    pm_id,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO pm_schedules (
+                    equip_id, pm_code, pm_title, frequency, planned_date, notify_days_before,
+                    notify_emails, status, actual_date, performed_by, result_summary, cost,
+                    evidence_file_name, evidence_local_path, evidence_synology_path, evidence_synced, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    equip_id,
+                    pm_code.strip().upper(),
+                    pm_title.strip(),
+                    frequency,
+                    planned_date,
+                    notify_days_before,
+                    notify_emails.strip() or eq["responsible_email"],
+                    status,
+                    actual_date,
+                    performed_by.strip(),
+                    result_summary.strip(),
+                    cost,
+                    ev_fname,
+                    ev_local,
+                    ev_syno,
+                    ev_synced,
+                    now_str,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
     return {"success": True, "message": msg}
 
 
@@ -1605,14 +1715,18 @@ async def save_vendor(
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     clean_code = vendor_code.strip().upper()
     conn = get_db()
-    if not clean_code or clean_code == "AUTO":
-        clean_code = generate_next_vendor_code(conn, category)
+    try:
+        if not clean_code or clean_code == "AUTO":
+            clean_code = generate_next_vendor_code(conn, category)
 
-    existing = None
-    if vendor_id:
-        existing = conn.execute("SELECT * FROM vendors WHERE id = ?", (vendor_id,)).fetchone()
-    else:
-        existing = conn.execute("SELECT * FROM vendors WHERE vendor_code = ?", (clean_code,)).fetchone()
+        existing_row = None
+        if vendor_id:
+            existing_row = conn.execute("SELECT * FROM vendors WHERE id = ?", (vendor_id,)).fetchone()
+        else:
+            existing_row = conn.execute("SELECT * FROM vendors WHERE vendor_code = ?", (clean_code,)).fetchone()
+        existing = dict(existing_row) if existing_row else None
+    finally:
+        conn.close()
 
     cert_fname = existing["cert_filename"] if existing else ""
     cert_local = existing["local_cert_path"] if existing else ""
@@ -1634,70 +1748,73 @@ async def save_vendor(
         cert_syno = up_res["synology_path"]
         msg = up_res["message"]
 
-    if existing:
-        target_id = existing["id"]
-        conn.execute(
-            """
-            UPDATE vendors
-            SET vendor_code = ?, vendor_name = ?, category = ?, products_services = ?,
-                contact_person = ?, phone = ?, email = ?, address = ?, tax_id = ?,
-                iso_certified = ?, avl_status = ?, next_eval_date = ?,
-                cert_filename = ?, local_cert_path = ?, synology_cert_path = ?, notes = ?
-            WHERE id = ?
-            """,
-            (
-                clean_code,
-                vendor_name.strip(),
-                category.strip(),
-                products_services.strip(),
-                contact_person.strip(),
-                phone.strip(),
-                email.strip(),
-                address.strip(),
-                tax_id.strip(),
-                iso_certified.strip(),
-                avl_status.strip(),
-                next_eval_date.strip(),
-                cert_fname,
-                cert_local,
-                cert_syno,
-                notes.strip(),
-                target_id,
-            ),
-        )
-    else:
-        cur = conn.execute(
-            """
-            INSERT INTO vendors (
-                vendor_code, vendor_name, category, products_services, contact_person,
-                phone, email, address, tax_id, iso_certified, avl_status, next_eval_date,
-                cert_filename, local_cert_path, synology_cert_path, notes, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                clean_code,
-                vendor_name.strip(),
-                category.strip(),
-                products_services.strip(),
-                contact_person.strip(),
-                phone.strip(),
-                email.strip(),
-                address.strip(),
-                tax_id.strip(),
-                iso_certified.strip(),
-                avl_status.strip(),
-                next_eval_date.strip(),
-                cert_fname,
-                cert_local,
-                cert_syno,
-                notes.strip(),
-                now_str,
-            ),
-        )
-        target_id = cur.lastrowid
+    conn = get_db()
+    try:
+        if existing:
+            target_id = existing["id"]
+            conn.execute(
+                """
+                UPDATE vendors
+                SET vendor_code = ?, vendor_name = ?, category = ?, products_services = ?,
+                    contact_person = ?, phone = ?, email = ?, address = ?, tax_id = ?,
+                    iso_certified = ?, avl_status = ?, next_eval_date = ?,
+                    cert_filename = ?, local_cert_path = ?, synology_cert_path = ?, notes = ?
+                WHERE id = ?
+                """,
+                (
+                    clean_code,
+                    vendor_name.strip(),
+                    category.strip(),
+                    products_services.strip(),
+                    contact_person.strip(),
+                    phone.strip(),
+                    email.strip(),
+                    address.strip(),
+                    tax_id.strip(),
+                    iso_certified.strip(),
+                    avl_status.strip(),
+                    next_eval_date.strip(),
+                    cert_fname,
+                    cert_local,
+                    cert_syno,
+                    notes.strip(),
+                    target_id,
+                ),
+            )
+        else:
+            cur = conn.execute(
+                """
+                INSERT INTO vendors (
+                    vendor_code, vendor_name, category, products_services, contact_person,
+                    phone, email, address, tax_id, iso_certified, avl_status, next_eval_date,
+                    cert_filename, local_cert_path, synology_cert_path, notes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    clean_code,
+                    vendor_name.strip(),
+                    category.strip(),
+                    products_services.strip(),
+                    contact_person.strip(),
+                    phone.strip(),
+                    email.strip(),
+                    address.strip(),
+                    tax_id.strip(),
+                    iso_certified.strip(),
+                    avl_status.strip(),
+                    next_eval_date.strip(),
+                    cert_fname,
+                    cert_local,
+                    cert_syno,
+                    notes.strip(),
+                    now_str,
+                ),
+            )
+            target_id = cur.lastrowid
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
     return {"success": True, "vendor_id": target_id, "message": msg}
 
 
@@ -1811,16 +1928,20 @@ async def save_avl_evaluation(
 ):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_db()
-    if not eval_code.strip() or eval_code.strip().upper() == "AUTO":
-        eval_code = generate_next_avl_eval_code(conn, planned_date[:4])
-    vendor = conn.execute("SELECT * FROM vendors WHERE id = ?", (vendor_id,)).fetchone()
-    if not vendor:
-        conn.close()
-        raise HTTPException(status_code=404, detail="ไม่พบข้อมูลผู้จัดจำหน่าย (Vendor)")
+    try:
+        if not eval_code.strip() or eval_code.strip().upper() == "AUTO":
+            eval_code = generate_next_avl_eval_code(conn, planned_date[:4])
+        vendor_row = conn.execute("SELECT * FROM vendors WHERE id = ?", (vendor_id,)).fetchone()
+        if not vendor_row:
+            raise HTTPException(status_code=404, detail="ไม่พบข้อมูลผู้จัดจำหน่าย (Vendor)")
+        vendor = dict(vendor_row)
 
-    existing = None
-    if eval_id:
-        existing = conn.execute("SELECT * FROM vendor_evaluations WHERE id = ?", (eval_id,)).fetchone()
+        existing_row = None
+        if eval_id:
+            existing_row = conn.execute("SELECT * FROM vendor_evaluations WHERE id = ?", (eval_id,)).fetchone()
+        existing = dict(existing_row) if existing_row else None
+    finally:
+        conn.close()
 
     ev_fname = existing["evidence_filename"] if existing else ""
     ev_local = existing["local_evidence_path"] if existing else ""
@@ -1865,109 +1986,112 @@ async def save_avl_evaluation(
     clean_eval_code = eval_code.strip().upper()
     final_emails = notify_emails.strip() or "maintenance@sunlogis.com, watcharagorn@sunlogis.com"
 
-    if existing:
-        conn.execute(
-            """
-            UPDATE vendor_evaluations
-            SET vendor_id = ?, eval_code = ?, eval_period = ?, frequency = ?, planned_date = ?,
-                notify_days_before = ?, notify_emails = ?, status = ?, actual_date = ?,
-                evaluator = ?, score_quality = ?, score_service_sla = ?, score_cost = ?,
-                score_cooperation = ?, total_score = ?, pass_criteria_flag = ?,
-                grade = ?, review_action = ?, car_no = ?, car_due_date = ?,
-                remarks = ?, evidence_filename = ?, local_evidence_path = ?, synology_evidence_path = ?
-            WHERE id = ?
-            """,
-            (
-                vendor_id,
-                clean_eval_code,
-                eval_period.strip(),
-                frequency,
-                planned_date,
-                notify_days_before,
-                final_emails,
-                status,
-                actual_date,
-                evaluator.strip(),
-                sq,
-                ss,
-                sc,
-                sco,
-                tot,
-                pflag,
-                grd,
-                ract,
-                car_no.strip(),
-                car_due_date.strip(),
-                remarks.strip(),
-                ev_fname,
-                ev_local,
-                ev_syno,
-                eval_id,
-            ),
-        )
-    else:
-        conn.execute(
-            """
-            INSERT INTO vendor_evaluations (
-                vendor_id, eval_code, eval_period, frequency, planned_date,
-                notify_days_before, notify_emails, status, actual_date, evaluator,
-                score_quality, score_service_sla, score_cost, score_cooperation,
-                total_score, pass_criteria_flag, grade, review_action,
-                car_no, car_due_date, remarks,
-                evidence_filename, local_evidence_path, synology_evidence_path, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                vendor_id,
-                clean_eval_code,
-                eval_period.strip(),
-                frequency,
-                planned_date,
-                notify_days_before,
-                final_emails,
-                status,
-                actual_date,
-                evaluator.strip(),
-                sq,
-                ss,
-                sc,
-                sco,
-                tot,
-                pflag,
-                grd,
-                ract,
-                car_no.strip(),
-                car_due_date.strip(),
-                remarks.strip(),
-                ev_fname,
-                ev_local,
-                ev_syno,
-                now_str,
-            ),
-        )
+    conn = get_db()
+    try:
+        if existing:
+            conn.execute(
+                """
+                UPDATE vendor_evaluations
+                SET vendor_id = ?, eval_code = ?, eval_period = ?, frequency = ?, planned_date = ?,
+                    notify_days_before = ?, notify_emails = ?, status = ?, actual_date = ?,
+                    evaluator = ?, score_quality = ?, score_service_sla = ?, score_cost = ?,
+                    score_cooperation = ?, total_score = ?, pass_criteria_flag = ?,
+                    grade = ?, review_action = ?, car_no = ?, car_due_date = ?,
+                    remarks = ?, evidence_filename = ?, local_evidence_path = ?, synology_evidence_path = ?
+                WHERE id = ?
+                """,
+                (
+                    vendor_id,
+                    clean_eval_code,
+                    eval_period.strip(),
+                    frequency,
+                    planned_date,
+                    notify_days_before,
+                    final_emails,
+                    status,
+                    actual_date,
+                    evaluator.strip(),
+                    sq,
+                    ss,
+                    sc,
+                    sco,
+                    tot,
+                    pflag,
+                    grd,
+                    ract,
+                    car_no.strip(),
+                    car_due_date.strip(),
+                    remarks.strip(),
+                    ev_fname,
+                    ev_local,
+                    ev_syno,
+                    eval_id,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO vendor_evaluations (
+                    vendor_id, eval_code, eval_period, frequency, planned_date,
+                    notify_days_before, notify_emails, status, actual_date, evaluator,
+                    score_quality, score_service_sla, score_cost, score_cooperation,
+                    total_score, pass_criteria_flag, grade, review_action,
+                    car_no, car_due_date, remarks,
+                    evidence_filename, local_evidence_path, synology_evidence_path, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    vendor_id,
+                    clean_eval_code,
+                    eval_period.strip(),
+                    frequency,
+                    planned_date,
+                    notify_days_before,
+                    final_emails,
+                    status,
+                    actual_date,
+                    evaluator.strip(),
+                    sq,
+                    ss,
+                    sc,
+                    sco,
+                    tot,
+                    pflag,
+                    grd,
+                    ract,
+                    car_no.strip(),
+                    car_due_date.strip(),
+                    remarks.strip(),
+                    ev_fname,
+                    ev_local,
+                    ev_syno,
+                    now_str,
+                ),
+            )
 
-    # Update parent vendor's latest evaluation info
-    if status == "Completed" or has_scores:
-        eval_dt_to_save = actual_date or planned_date
-        new_avl_st = rec_status if update_vendor_status else vendor["avl_status"]
-        conn.execute(
-            """
-            UPDATE vendors
-            SET latest_score = ?, latest_grade = ?, latest_review_action = ?,
-                last_eval_date = ?, avl_status = ?
-            WHERE id = ?
-            """,
-            (tot, grd, ract, eval_dt_to_save, new_avl_st, vendor_id),
-        )
-    else:
-        # Scheduled future evaluation -> update next_eval_date on vendor if empty or earlier
-        conn.execute(
-            "UPDATE vendors SET next_eval_date = ? WHERE id = ?",
-            (planned_date, vendor_id),
-        )
+        # Update parent vendor's latest evaluation info
+        if status == "Completed" or has_scores:
+            eval_dt_to_save = actual_date or planned_date
+            new_avl_st = rec_status if update_vendor_status else vendor["avl_status"]
+            conn.execute(
+                """
+                UPDATE vendors
+                SET latest_score = ?, latest_grade = ?, latest_review_action = ?,
+                    last_eval_date = ?, avl_status = ?
+                WHERE id = ?
+                """,
+                (tot, grd, ract, eval_dt_to_save, new_avl_st, vendor_id),
+            )
+        else:
+            # Scheduled future evaluation -> update next_eval_date on vendor if empty or earlier
+            conn.execute(
+                "UPDATE vendors SET next_eval_date = ? WHERE id = ?",
+                (planned_date, vendor_id),
+            )
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
     return {
         "success": True,
         "message": msg,
@@ -2037,61 +2161,89 @@ def sync_all_to_synology(request: Request):
     require_admin(request)
     syno = get_synology_client()
     conn = get_db()
+    try:
+        docs = [dict(r) for r in conn.execute("SELECT id, doc_code, file_name, local_path FROM documents WHERE local_path != ''").fetchall()]
+        emps = [dict(r) for r in conn.execute("SELECT id, emp_code, application_file_name, application_local_path FROM employees WHERE application_local_path != ''").fetchall()]
+        trs = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT t.id, t.evidence_file_name, t.evidence_local_path, e.emp_code FROM training_records t JOIN employees e ON t.emp_id = e.id WHERE t.evidence_local_path != ''"
+            ).fetchall()
+        ]
+        pms = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT p.id, p.evidence_file_name, p.evidence_local_path, e.equip_code FROM pm_schedules p JOIN equipment e ON p.equip_id = e.id WHERE p.evidence_local_path != ''"
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
     synced_count = 0
 
     # 1. Sync Documents
-    docs = conn.execute("SELECT id, doc_code, file_name, local_path FROM documents WHERE local_path != ''").fetchall()
     for d in docs:
         if os.path.exists(d["local_path"]):
             res = syno.upload_file(d["local_path"], "Documents", d["file_name"] or f"{d['doc_code']}.pdf")
             if res["synology_synced"]:
                 synced_count += 1
-                conn.execute(
-                    "UPDATE documents SET synology_path = ?, synology_synced = 1 WHERE id = ?",
-                    (res["synology_path"], d["id"]),
-                )
+                c = get_db()
+                try:
+                    c.execute(
+                        "UPDATE documents SET synology_path = ?, synology_synced = 1 WHERE id = ?",
+                        (res["synology_path"], d["id"]),
+                    )
+                    c.commit()
+                finally:
+                    c.close()
 
     # 2. Sync Employee Applications & Training Evidence
-    emps = conn.execute("SELECT id, emp_code, application_file_name, application_local_path FROM employees WHERE application_local_path != ''").fetchall()
     for e in emps:
         if os.path.exists(e["application_local_path"]):
             res = syno.upload_file(e["application_local_path"], f"HR_Employees/{e['emp_code']}/Application", e["application_file_name"])
             if res["synology_synced"]:
                 synced_count += 1
-                conn.execute(
-                    "UPDATE employees SET application_synology_path = ?, application_synced = 1 WHERE id = ?",
-                    (res["synology_path"], e["id"]),
-                )
+                c = get_db()
+                try:
+                    c.execute(
+                        "UPDATE employees SET application_synology_path = ?, application_synced = 1 WHERE id = ?",
+                        (res["synology_path"], e["id"]),
+                    )
+                    c.commit()
+                finally:
+                    c.close()
 
-    trs = conn.execute(
-        "SELECT t.id, t.evidence_file_name, t.evidence_local_path, e.emp_code FROM training_records t JOIN employees e ON t.emp_id = e.id WHERE t.evidence_local_path != ''"
-    ).fetchall()
     for t in trs:
         if os.path.exists(t["evidence_local_path"]):
             res = syno.upload_file(t["evidence_local_path"], f"HR_Employees/{t['emp_code']}/Training", t["evidence_file_name"])
             if res["synology_synced"]:
                 synced_count += 1
-                conn.execute(
-                    "UPDATE training_records SET evidence_synology_path = ?, evidence_synced = 1 WHERE id = ?",
-                    (res["synology_path"], t["id"]),
-                )
+                c = get_db()
+                try:
+                    c.execute(
+                        "UPDATE training_records SET evidence_synology_path = ?, evidence_synced = 1 WHERE id = ?",
+                        (res["synology_path"], t["id"]),
+                    )
+                    c.commit()
+                finally:
+                    c.close()
 
     # 3. Sync PM Evidence
-    pms = conn.execute(
-        "SELECT p.id, p.evidence_file_name, p.evidence_local_path, e.equip_code FROM pm_schedules p JOIN equipment e ON p.equip_id = e.id WHERE p.evidence_local_path != ''"
-    ).fetchall()
     for p in pms:
         if os.path.exists(p["evidence_local_path"]):
             res = syno.upload_file(p["evidence_local_path"], f"MHE_Maintenance/{p['equip_code']}", p["evidence_file_name"])
             if res["synology_synced"]:
                 synced_count += 1
-                conn.execute(
-                    "UPDATE pm_schedules SET evidence_synology_path = ?, evidence_synced = 1 WHERE id = ?",
-                    (res["synology_path"], p["id"]),
-                )
+                c = get_db()
+                try:
+                    c.execute(
+                        "UPDATE pm_schedules SET evidence_synology_path = ?, evidence_synced = 1 WHERE id = ?",
+                        (res["synology_path"], p["id"]),
+                    )
+                    c.commit()
+                finally:
+                    c.close()
 
-    conn.commit()
-    conn.close()
     return {"success": True, "synced_count": synced_count, "message": f"ซิงค์ไฟล์ขึ้น Synology Drive สำเร็จ {synced_count} รายการ"}
 
 
