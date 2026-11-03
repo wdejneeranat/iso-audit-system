@@ -1330,9 +1330,9 @@ async function loadUsersList() {
                 </div>
                 <div>
                     ${
-                        u.id !== 1
-                            ? `<button onclick="deleteUser(${u.id})" class="text-xs text-rose-600 hover:bg-rose-50 px-2.5 py-1 rounded"><i class="fa-solid fa-trash"></i></button>`
-                            : `<span class="text-xs text-slate-400">System Admin</span>`
+                        u.username.toLowerCase() !== (currentUser?.username || "").toLowerCase()
+                            ? `<button onclick="deleteUser(${u.id})" class="text-xs text-rose-600 hover:bg-rose-50 px-2.5 py-1 rounded" title="ลบผู้ใช้งาน"><i class="fa-solid fa-trash"></i></button>`
+                            : `<span class="text-xs text-emerald-600 font-semibold">กำลังใช้งาน</span>`
                     }
                 </div>
             </div>
@@ -1373,8 +1373,14 @@ async function createNewUser() {
 async function deleteUser(uid) {
     if (!currentUser || currentUser.role !== "Admin") return;
     if (!confirm("ยืนยันการลบผู้ใช้งานนี้?")) return;
-    await fetch(`/api/users/${uid}`, { method: "DELETE", headers: apiHeaders() });
+    const res = await fetch(`/api/users/${uid}`, { method: "DELETE", headers: apiHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        showToast(data.detail || "ไม่สามารถลบผู้ใช้งานได้", true);
+        return;
+    }
     await loadUsersList();
+    showToast("ลบผู้ใช้งานและบันทึกสถานะลงฐานข้อมูลเรียบร้อย");
 }
 
 // =========================================================

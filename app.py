@@ -78,8 +78,117 @@ def create_minimal_pdf(file_path: str, title_text: str, subtitle_text: str) -> N
         f.write(pdf_bytes)
 
 
+def sync_users_state_to_storage():
+    """
+    Persist current `users` and `deleted_users` from SQLite DB to local storage
+    AND Synology NAS (/DATA/ISO/System_DB/users_state.json) so user creations/deletions
+    survive container rebuilds and GitHub deployments.
+    """
+    try:
+        conn = get_db()
+        users_rows = [dict(r) for r in conn.execute("SELECT * FROM users ORDER BY id ASC").fetchall()]
+        del_rows = [dict(r) for r in conn.execute("SELECT * FROM deleted_users").fetchall()]
+        conn.close()
+
+        state_dir = os.path.join(STORAGE_DIR, "ISO", "System_DB")
+        os.makedirs(state_dir, exist_ok=True)
+        state_file = os.path.join(state_dir, "users_state.json")
+        payload = {
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "users": users_rows,
+            "deleted_users": del_rows,
+        }
+        with open(state_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+        syno = get_synology_client()
+        syno.upload_file(state_file, "System_DB", "users_state.json")
+    except Exception:
+        pass
+
+
+def restore_users_state_from_storage():
+    """
+    On startup, if a saved users_state.json exists in local storage or Synology NAS,
+    restore created/deleted users into SQLite DB so they are never lost across deployments.
+    """
+    try:
+        state_dir = os.path.join(STORAGE_DIR, "ISO", "System_DB")
+        os.makedirs(state_dir, exist_ok=True)
+        state_file = os.path.join(state_dir, "users_state.json")
+
+        syno = get_synology_client()
+        ok, _ = syno.connect_and_login()
+        if ok and syno.resolved_root_path:
+            remote_state = f"{syno.resolved_root_path.rstrip('/')}/System_DB/users_state.json"
+            syno.download_file_to_local(remote_state, state_file)
+
+        if not os.path.exists(state_file):
+            return
+
+        with open(state_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        saved_users = data.get("users")
+        saved_deleted = data.get("deleted_users", [])
+        if not isinstance(saved_users, list) or len(saved_users) == 0:
+            return
+
+        conn = get_db()
+        for d in saved_deleted:
+            if d.get("username"):
+                conn.execute(
+                    "INSERT OR REPLACE INTO deleted_users (username, deleted_at) VALUES (?, ?)",
+                    (d["username"], d.get("deleted_at", "")),
+                )
+
+        deleted_set = {d["username"].lower() for d in saved_deleted if d.get("username")}
+        # Remove any user in DB that was explicitly deleted
+        for uname_low in deleted_set:
+            conn.execute("DELETE FROM users WHERE LOWER(username) = ?", (uname_low,))
+
+        # Upsert all saved active users
+        saved_usernames_low = set()
+        for u in saved_users:
+            uname = (u.get("username") or "").strip()
+            if not uname or uname.lower() in deleted_set:
+                continue
+            saved_usernames_low.add(uname.lower())
+            conn.execute(
+                """
+                INSERT INTO users (username, password_hash, full_name, role, department, email, is_active, must_change_password, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET
+                    password_hash = excluded.password_hash,
+                    full_name = excluded.full_name,
+                    role = excluded.role,
+                    department = excluded.department,
+                    email = excluded.email,
+                    is_active = excluded.is_active,
+                    must_change_password = excluded.must_change_password
+                """,
+                (
+                    uname,
+                    u.get("password_hash", ""),
+                    u.get("full_name", uname),
+                    u.get("role", "Viewer"),
+                    u.get("department", "General"),
+                    u.get("email", ""),
+                    int(u.get("is_active", 1)),
+                    int(u.get("must_change_password", 0)),
+                    u.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                ),
+            )
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('users_initialized', '1')")
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
 def bootstrap_sample_files_and_synology():
     """Ensure sample documents have local PDF files named by doc_code and sync to Synology."""
+    restore_users_state_from_storage()
     conn = get_db()
     docs = conn.execute("SELECT id, doc_code, doc_title, revision_no, file_name, local_path, synology_synced FROM documents").fetchall()
     syno = get_synology_client()
@@ -356,6 +465,7 @@ def change_password(payload: ChangePasswordRequest):
     )
     conn.commit()
     conn.close()
+    sync_users_state_to_storage()
     return {"success": True, "message": "เปลี่ยนรหัสผ่านสำเร็จเรียบร้อย"}
 
 
@@ -382,14 +492,16 @@ def create_user(request: Request, payload: CreateUserRequest):
     require_admin(request)
     conn = get_db()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    clean_uname = payload.username.strip()
     try:
+        conn.execute("DELETE FROM deleted_users WHERE LOWER(username) = LOWER(?)", (clean_uname,))
         conn.execute(
             """
             INSERT INTO users (username, password_hash, full_name, role, department, email, is_active, must_change_password, created_at)
             VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)
             """,
             (
-                payload.username.strip(),
+                clean_uname,
                 hash_password(payload.password),
                 payload.full_name.strip(),
                 payload.role,
@@ -403,18 +515,31 @@ def create_user(request: Request, payload: CreateUserRequest):
         conn.close()
         raise HTTPException(status_code=400, detail=f"ไม่สามารถสร้างผู้ใช้ได้: {e}")
     conn.close()
+    sync_users_state_to_storage()
     return {"success": True, "message": "เพิ่มผู้ใช้งานสำเร็จ (ผู้ใช้จะต้องเปลี่ยนรหัสผ่านเมื่อเข้าสู่ระบบครั้งแรก)"}
 
 
 @app.delete("/api/users/{user_id}")
 def delete_user(user_id: int, request: Request):
-    require_admin(request)
-    if user_id == 1:
-        raise HTTPException(status_code=400, detail="ไม่สามารถลบบัญชี Admin หลักได้")
+    current_admin = require_admin(request)
     conn = get_db()
+    target = conn.execute("SELECT id, username FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not target:
+        conn.close()
+        raise HTTPException(status_code=404, detail="ไม่พบผู้ใช้งาน")
+    if target["username"].lower() == (current_admin.get("username") or "").lower():
+        conn.close()
+        raise HTTPException(status_code=400, detail="ไม่สามารถลบบัญชีที่คุณกำลังใช้งานอยู่ได้")
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "INSERT OR REPLACE INTO deleted_users (username, deleted_at) VALUES (?, ?)",
+        (target["username"], now_str),
+    )
     conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
     conn.close()
+    sync_users_state_to_storage()
     return {"success": True}
 
 

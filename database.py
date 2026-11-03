@@ -1,15 +1,24 @@
 import os
 import json
+import shutil
 import sqlite3
 import hashlib
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 
-DB_PATH = os.environ.get(
-    "ISO_DB_PATH",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "iso_audit.db"),
-)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_REPO_DB = os.path.join(BASE_DIR, "iso_audit.db")
+DB_PATH = os.environ.get("ISO_DB_PATH", DEFAULT_REPO_DB)
 os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
+
+# If ISO_DB_PATH points to a volume path (e.g. /app/storage/iso_audit.db) that does not exist yet,
+# seed it from the repository's iso_audit.db so existing users and records are preserved.
+if os.path.abspath(DB_PATH) != os.path.abspath(DEFAULT_REPO_DB):
+    if not os.path.exists(DB_PATH) and os.path.exists(DEFAULT_REPO_DB):
+        try:
+            shutil.copy2(DEFAULT_REPO_DB, DB_PATH)
+        except Exception:
+            pass
 
 
 def hash_password(password: str) -> str:
@@ -49,6 +58,16 @@ def init_db() -> None:
     user_cols = [c["name"] for c in cur.execute("PRAGMA table_info(users)").fetchall()]
     if "must_change_password" not in user_cols:
         cur.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 1")
+
+    # Track deleted usernames so deleted default users are never re-created on restart/deploy
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS deleted_users (
+            username TEXT PRIMARY KEY,
+            deleted_at TEXT NOT NULL
+        )
+        """
+    )
 
     # 2. ISO Master File Documents table
     cur.execute(
@@ -333,9 +352,13 @@ def init_db() -> None:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     today = datetime.now().date()
 
-    # Seed default users if empty
+    # Seed default users ONLY ONCE if users table has never been initialized
+    users_init_row = cur.execute("SELECT value FROM settings WHERE key = 'users_initialized'").fetchone()
+    users_already_initialized = bool(users_init_row and users_init_row["value"] == "1")
     cur.execute("SELECT COUNT(*) as cnt FROM users")
-    if cur.fetchone()["cnt"] == 0:
+    user_count = cur.fetchone()["cnt"]
+
+    if not users_already_initialized and user_count == 0:
         default_users = [
             ("Watcharagorn", hash_password("Cervelo$3"), "Watcharagorn (System Admin)", "Admin", "Management", "watcharagorn@sunlogis.com", 0),
             ("admin", hash_password("Cervelo$3"), "System Administrator", "Admin", "Management", "admin@sunlogis.com", 1),
@@ -345,31 +368,28 @@ def init_db() -> None:
             ("viewer", hash_password("viewer123"), "พนักงานทั่วไป / Auditor (Viewer)", "Viewer", "Operations", "auditor@sunlogis.com", 1),
         ]
         for u, pw, fname, role, dept, email, must_chg in default_users:
+            is_del = cur.execute("SELECT 1 FROM deleted_users WHERE LOWER(username) = LOWER(?)", (u,)).fetchone()
+            if not is_del:
+                cur.execute(
+                    """
+                    INSERT OR IGNORE INTO users (username, password_hash, full_name, role, department, email, is_active, must_change_password, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    """,
+                    (u, pw, fname, role, dept, email, must_chg, now_str),
+                )
+        cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('users_initialized', '1')")
+    elif not users_already_initialized:
+        # Mark existing database as initialized without overwriting any user passwords or re-adding deleted users
+        is_del = cur.execute("SELECT 1 FROM deleted_users WHERE LOWER(username) = 'watcharagorn'").fetchone()
+        if not is_del:
             cur.execute(
                 """
-                INSERT INTO users (username, password_hash, full_name, role, department, email, is_active, must_change_password, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                INSERT OR IGNORE INTO users (username, password_hash, full_name, role, department, email, is_active, must_change_password, created_at)
+                VALUES ('Watcharagorn', ?, 'Watcharagorn (System Admin)', 'Admin', 'Management', 'watcharagorn@sunlogis.com', 1, 0, ?)
                 """,
-                (u, pw, fname, role, dept, email, must_chg, now_str),
+                (hash_password("Cervelo$3"), now_str),
             )
-    else:
-        cur.execute(
-            "UPDATE users SET password_hash = ? WHERE username = 'admin' AND must_change_password = 1",
-            (hash_password("Cervelo$3"),),
-        )
-        # Ensure user "Watcharagorn" exists with Admin role and is exempt from first-login password change (must_change_password = 0)
-        cur.execute(
-            """
-            INSERT INTO users (username, password_hash, full_name, role, department, email, is_active, must_change_password, created_at)
-            VALUES ('Watcharagorn', ?, 'Watcharagorn (System Admin)', 'Admin', 'Management', 'watcharagorn@sunlogis.com', 1, 0, ?)
-            ON CONFLICT(username) DO UPDATE SET
-                password_hash = excluded.password_hash,
-                role = 'Admin',
-                is_active = 1,
-                must_change_password = 0
-            """,
-            (hash_password("Cervelo$3"), now_str),
-        )
+        cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('users_initialized', '1')")
 
     # Seed sample Master List ISO Documents if empty
     cur.execute("SELECT COUNT(*) as cnt FROM documents")
