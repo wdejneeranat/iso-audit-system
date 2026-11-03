@@ -463,13 +463,43 @@ def list_documents(
     return results
 
 
+def generate_next_doc_code(conn: sqlite3.Connection, category: str, dept_code: str) -> str:
+    cat = (category or "PM").strip().upper()
+    if cat == "QP":
+        cat = "PM"
+    dept = (dept_code or "DC").strip().upper()
+    prefix = f"{cat}-{dept}-"
+    rows = conn.execute("SELECT doc_code FROM documents WHERE doc_code LIKE ?", (f"{prefix}%",)).fetchall()
+    max_num = 0
+    for r in rows:
+        code_str = r["doc_code"] or ""
+        m = re.match(rf"^{re.escape(prefix)}(\d+)$", code_str.strip().upper())
+        if m:
+            num = int(m.group(1))
+            if num > max_num:
+                max_num = num
+    return f"{prefix}{max_num + 1:03d}"
+
+
+@app.get("/api/documents/next-code")
+def get_next_document_code(
+    category: str = Query("PM"),
+    dept_code: str = Query("DC"),
+):
+    conn = get_db()
+    next_code = generate_next_doc_code(conn, category, dept_code)
+    conn.close()
+    return {"doc_code": next_code}
+
+
 @app.post("/api/documents")
 async def create_or_update_document(
     request: Request,
     doc_id: Optional[int] = Form(None),
-    doc_code: str = Form(...),
+    doc_code: str = Form(""),
     doc_title: str = Form(...),
-    category: str = Form("QP"),
+    category: str = Form("PM"),
+    dept_code: str = Form("DC"),
     effective_date: str = Form(...),
     revision_no: int = Form(0),
     revision_date: str = Form(...),
@@ -487,6 +517,8 @@ async def create_or_update_document(
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     conn = get_db()
+    if not clean_code or clean_code == "AUTO":
+        clean_code = generate_next_doc_code(conn, category, dept_code)
     existing = None
     if doc_id:
         existing = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
@@ -1395,10 +1427,42 @@ def list_vendors(
     return results
 
 
+def get_vendor_category_abbr(category: str) -> str:
+    c = (category or "").strip().lower()
+    if "mhe" in c or "storage" in c:
+        return "MHE"
+    if "fire" in c or "fps" in c:
+        return "FPS"
+    return "OTH"
+
+
+def generate_next_vendor_code(conn: sqlite3.Connection, category: str) -> str:
+    abbr = get_vendor_category_abbr(category)
+    prefix = f"AVL-{abbr}-"
+    rows = conn.execute("SELECT vendor_code FROM vendors WHERE vendor_code LIKE ?", (f"{prefix}%",)).fetchall()
+    max_num = 0
+    for r in rows:
+        code_str = r["vendor_code"] or ""
+        m = re.match(rf"^{re.escape(prefix)}(\d+)$", code_str.strip().upper())
+        if m:
+            num = int(m.group(1))
+            if num > max_num:
+                max_num = num
+    return f"{prefix}{max_num + 1:03d}"
+
+
+@app.get("/api/vendors/next-code")
+def get_next_vendor_code_api(category: str = Query("MHE & Storage Systems")):
+    conn = get_db()
+    next_code = generate_next_vendor_code(conn, category)
+    conn.close()
+    return {"vendor_code": next_code}
+
+
 @app.post("/api/vendors")
 async def save_vendor(
     vendor_id: Optional[int] = Form(None),
-    vendor_code: str = Form(...),
+    vendor_code: str = Form(""),
     vendor_name: str = Form(...),
     category: str = Form("MHE & Storage Systems"),
     products_services: str = Form(""),
@@ -1416,6 +1480,8 @@ async def save_vendor(
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     clean_code = vendor_code.strip().upper()
     conn = get_db()
+    if not clean_code or clean_code == "AUTO":
+        clean_code = generate_next_vendor_code(conn, category)
 
     existing = None
     if vendor_id:
@@ -1570,11 +1636,36 @@ def list_avl_evaluations(
     return results
 
 
+def generate_next_avl_eval_code(conn: sqlite3.Connection, year_str: str = "") -> str:
+    yr = (year_str or "").strip()[:4]
+    if not re.match(r"^\d{4}$", yr):
+        yr = str(datetime.now().year)
+    prefix = f"AVL-EVAL-{yr}-"
+    rows = conn.execute("SELECT eval_code FROM vendor_evaluations WHERE eval_code LIKE ?", (f"{prefix}%",)).fetchall()
+    max_num = 0
+    for r in rows:
+        code_str = r["eval_code"] or ""
+        m = re.match(rf"^{re.escape(prefix)}(\d+)$", code_str.strip().upper())
+        if m:
+            num = int(m.group(1))
+            if num > max_num:
+                max_num = num
+    return f"{prefix}{max_num + 1:03d}"
+
+
+@app.get("/api/avl-evaluations/next-code")
+def get_next_avl_eval_code_api(year: str = Query("")):
+    conn = get_db()
+    next_code = generate_next_avl_eval_code(conn, year)
+    conn.close()
+    return {"eval_code": next_code}
+
+
 @app.post("/api/avl-evaluations")
 async def save_avl_evaluation(
     eval_id: Optional[int] = Form(None),
     vendor_id: int = Form(...),
-    eval_code: str = Form(...),
+    eval_code: str = Form(""),
     eval_period: str = Form(...),
     frequency: str = Form("Quarterly"),
     planned_date: str = Form(...),
@@ -1595,6 +1686,8 @@ async def save_avl_evaluation(
 ):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_db()
+    if not eval_code.strip() or eval_code.strip().upper() == "AUTO":
+        eval_code = generate_next_avl_eval_code(conn, planned_date[:4])
     vendor = conn.execute("SELECT * FROM vendors WHERE id = ?", (vendor_id,)).fetchone()
     if not vendor:
         conn.close()

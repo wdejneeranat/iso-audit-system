@@ -376,7 +376,7 @@ def init_db() -> None:
     if cur.fetchone()["cnt"] == 0:
         sample_docs = [
             (
-                "QM-ISO-001",
+                "QM-MR-001",
                 "คู่มือคุณภาพและการจัดการมาตรฐาน ISO 9001:2015 (Quality Manual)",
                 "QM",
                 "2025-01-15",
@@ -390,9 +390,9 @@ def init_db() -> None:
                 "เอกสารหลักสำหรับทุกแผนก ใช้ในการตรวจประเมิน ISO",
             ),
             (
-                "QP-DCC-001",
+                "PM-DC-001",
                 "ระเบียบปฏิบัติงานการควบคุมเอกสารและบันทึกคุณภาพ (Document & Record Control)",
-                "QP",
+                "PM",
                 "2025-02-01",
                 1,
                 "2026-01-20",
@@ -404,9 +404,9 @@ def init_db() -> None:
                 "กำหนดมาตรฐานการออกรหัสเอกสาร การแก้ไข และการเก็บรักษาบน Synology Drive",
             ),
             (
-                "QP-HR-002",
+                "PM-HR-001",
                 "ระเบียบปฏิบัติงานการสรรหา คัดเลือก และฝึกอบรมบุคลากร (Recruitment & Training)",
-                "QP",
+                "PM",
                 "2025-03-01",
                 3,
                 "2026-06-15",
@@ -418,7 +418,7 @@ def init_db() -> None:
                 "จำกัดสิทธิ์เฉพาะฝ่าย HR, DCC และผู้บริหาร",
             ),
             (
-                "WI-MHE-001",
+                "WI-WH-001",
                 "วิธีปฏิบัติงานการตรวจสอบและบำรุงรักษารถโฟร์คลิฟท์และชั้นวางสินค้า (MHE & Rack PM)",
                 "WI",
                 "2025-04-10",
@@ -432,7 +432,7 @@ def init_db() -> None:
                 "คู่มือตรวจสอบความปลอดภัย MHE และ Rack ประจำเดือน/ประจำไตรมาส",
             ),
             (
-                "FM-HR-005",
+                "FM-HR-001",
                 "แบบฟอร์มบันทึกประวัติการฝึกอบรมรายบุคคล (Individual Training Record Form)",
                 "FM",
                 "2025-01-15",
@@ -675,7 +675,7 @@ def init_db() -> None:
     if cur.fetchone()["cnt"] == 0:
         ex_docs = [
             (
-                "EX-NFPA-025",
+                "EX-WH-001",
                 "มาตรฐานสากลระบบป้องกันอัคคีภัยและตรวจสอบปั๊มดับเพลิง (NFPA 25 / UL / FM Standard Manual)",
                 "EX",
                 "2025-01-10",
@@ -689,7 +689,7 @@ def init_db() -> None:
                 "เอกสารภายนอก (External Document) อ้างอิงตามคู่มือการคัดสรรและติดตามคุณภาพผู้จัดจำหน่าย",
             ),
             (
-                "QM-AVL-001",
+                "QM-MR-002",
                 "คู่มือการคัดสรร เลือกผู้จัดจำหน่าย และติดตามคุณภาพ (Supplier Selection & Quality Monitoring Manual)",
                 "QM",
                 "2026-01-01",
@@ -799,7 +799,7 @@ def init_db() -> None:
         sample_evals = [
             (
                 1,
-                "AVL-EVAL-2026-Q3-01",
+                "AVL-EVAL-2026-001",
                 "2026-Q3 (ไตรมาส 3/2026)",
                 "Quarterly",
                 done_prev,
@@ -824,7 +824,7 @@ def init_db() -> None:
             ),
             (
                 2,
-                "AVL-EVAL-2026-Q3-02",
+                "AVL-EVAL-2026-002",
                 "2026-Q3 (ไตรมาส 3/2026)",
                 "Quarterly",
                 done_prev,
@@ -849,7 +849,7 @@ def init_db() -> None:
             ),
             (
                 3,
-                "AVL-EVAL-2026-Q3-03",
+                "AVL-EVAL-2026-003",
                 "2026-Q3 (ไตรมาส 3/2026)",
                 "Quarterly",
                 done_prev,
@@ -874,7 +874,7 @@ def init_db() -> None:
             ),
             (
                 1,
-                "AVL-EVAL-2026-Q4-01",
+                "AVL-EVAL-2026-004",
                 "2026-Q4 (ประเมินประจำไตรมาส 4 + สรุปรายปี)",
                 "Quarterly",
                 due_20,
@@ -899,7 +899,7 @@ def init_db() -> None:
             ),
             (
                 2,
-                "AVL-EVAL-2026-Q4-02",
+                "AVL-EVAL-2026-005",
                 "2026-Q4 (ประเมินระบบป้องกันอัคคีภัยประจำปี)",
                 "Annual",
                 due_28,
@@ -942,6 +942,41 @@ def init_db() -> None:
                     st, adate, evaluator, sq, ss, sc, sco, tot, pflag, grd, ract, cno, cdue, rem, now_str
                 ),
             )
+
+    # Migrate existing QP -> PM and standardize sample codes to {CAT}-{DEPT}-{NNN} and AVL-EVAL-{YYYY}-{NNN}
+    cur.execute("UPDATE documents SET category = 'PM' WHERE category = 'QP'")
+    doc_code_migrations = [
+        ("QP-DCC-001", "PM-DC-001", "PM"),
+        ("QP-HR-002", "PM-HR-001", "PM"),
+        ("QM-ISO-001", "QM-MR-001", "QM"),
+        ("WI-MHE-001", "WI-WH-001", "WI"),
+        ("FM-HR-005", "FM-HR-001", "FM"),
+        ("EX-NFPA-025", "EX-WH-001", "EX"),
+        ("QM-AVL-001", "QM-MR-002", "QM"),
+    ]
+    for old_c, new_c, new_cat in doc_code_migrations:
+        cur.execute(
+            "UPDATE OR IGNORE documents SET doc_code = ?, category = ? WHERE doc_code = ?",
+            (new_c, new_cat, old_c),
+        )
+        cur.execute(
+            "UPDATE document_revisions SET doc_code = ? WHERE doc_code = ?",
+            (new_c, old_c),
+        )
+
+    cur.execute("UPDATE vendors SET category = 'Others' WHERE category = 'Other'")
+    eval_code_migrations = [
+        ("AVL-EVAL-2026-Q3-01", "AVL-EVAL-2026-001"),
+        ("AVL-EVAL-2026-Q3-02", "AVL-EVAL-2026-002"),
+        ("AVL-EVAL-2026-Q3-03", "AVL-EVAL-2026-003"),
+        ("AVL-EVAL-2026-Q4-01", "AVL-EVAL-2026-004"),
+        ("AVL-EVAL-2026-Q4-02", "AVL-EVAL-2026-005"),
+    ]
+    for old_ec, new_ec in eval_code_migrations:
+        cur.execute(
+            "UPDATE OR IGNORE vendor_evaluations SET eval_code = ? WHERE eval_code = ?",
+            (new_ec, old_ec),
+        )
 
     conn.commit()
     conn.close()

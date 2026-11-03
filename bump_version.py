@@ -32,7 +32,7 @@ def bump_version():
             html = f.read()
         html = re.sub(r"Version\s+\d+\.\d+", f"Version {new_ver}", html)
         html = re.sub(r"/static/app\.js(\?v=[^\"']*)?", f"/static/app.js?v={new_ver}", html)
-        with open(INDEX_FILE, "w", encoding="utf-8") as f:
+        with open(INDEX_FILE, "w", encoding="utf-8", newline="\n") as f:
             f.write(html)
 
     print(f"Bumped application version to Version {new_ver}")
