@@ -2,6 +2,7 @@ import os
 import json
 import urllib3
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, Dict, Any, List, Tuple
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -15,6 +16,8 @@ class SynologyClient:
     """
 
     _cached_working_url: Optional[str] = None
+    _cached_sid: Optional[str] = None
+    _cached_root_path: Optional[str] = None
 
     def __init__(
         self,
@@ -170,18 +173,35 @@ class SynologyClient:
                 unique_candidates.append(c)
         return unique_candidates
 
-    def connect_and_login(self) -> Tuple[bool, str]:
+    def connect_and_login(self, force_relogin: bool = False) -> Tuple[bool, str]:
         """Find working DSM endpoint, authenticate, and resolve the target ISO root folder."""
+        if (
+            not force_relogin
+            and SynologyClient._cached_working_url
+            and SynologyClient._cached_sid
+            and SynologyClient._cached_root_path
+        ):
+            self.resolved_base_url = SynologyClient._cached_working_url
+            self.sid = SynologyClient._cached_sid
+            self.resolved_root_path = SynologyClient._cached_root_path
+            return True, f"เชื่อมต่อสำเร็จ ({self.resolved_base_url}) โฟลเดอร์: {self.resolved_root_path}"
+
         working_url = None
-        if SynologyClient._cached_working_url and self._probe_dsm_url(SynologyClient._cached_working_url):
+        if SynologyClient._cached_working_url and self._probe_dsm_url(SynologyClient._cached_working_url, timeout=2.5):
             working_url = SynologyClient._cached_working_url
         else:
             candidates = self.resolve_quickconnect()
-            for url in candidates:
-                if self._probe_dsm_url(url):
-                    working_url = url
-                    SynologyClient._cached_working_url = url
-                    break
+            if candidates:
+                with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as pool:
+                    future_to_url = {pool.submit(self._probe_dsm_url, u, 3.0): u for u in candidates}
+                    for fut in as_completed(future_to_url):
+                        try:
+                            if fut.result():
+                                working_url = future_to_url[fut]
+                                SynologyClient._cached_working_url = working_url
+                                break
+                        except Exception:
+                            pass
 
         if not working_url:
             self.last_error = "ไม่สามารถเชื่อมต่อ Synology NAS ได้ (ตรวจสอบ QuickConnect หรือเครือข่าย)"
@@ -223,6 +243,9 @@ class SynologyClient:
             if not root_ok:
                 return False, root_msg
 
+            SynologyClient._cached_working_url = self.resolved_base_url
+            SynologyClient._cached_sid = self.sid
+            SynologyClient._cached_root_path = self.resolved_root_path
             return True, f"เชื่อมต่อสำเร็จ ({self.resolved_base_url}) โฟลเดอร์: {self.resolved_root_path}"
         except Exception as e:
             self.last_error = f"Synology API Exception: {str(e)}"
@@ -464,33 +487,40 @@ class SynologyClient:
 
     def download_file_to_local(self, remote_path: str, local_target: str) -> bool:
         """Download a file from Synology FileStation to local_target if needed."""
-        ok, _ = self.connect_and_login()
-        if not ok:
-            return False
-        entry_url = f"{self.resolved_base_url}/webapi/entry.cgi"
-        try:
-            resp = requests.get(
-                entry_url,
-                params={
-                    "api": "SYNO.FileStation.Download",
-                    "version": "2",
-                    "method": "download",
-                    "path": remote_path,
-                    "mode": "download",
-                    "_sid": self.sid,
-                },
-                verify=False,
-                timeout=30,
-                stream=True,
-            )
-            if resp.status_code == 200 and "application/json" not in resp.headers.get("Content-Type", ""):
-                os.makedirs(os.path.dirname(os.path.abspath(local_target)), exist_ok=True)
-                with open(local_target, "wb") as f:
-                    for chunk in resp.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-                return True
-        except Exception:
-            pass
+        if not self.sid or not self.resolved_base_url:
+            ok, _ = self.connect_and_login()
+            if not ok:
+                return False
+        for attempt in range(2):
+            entry_url = f"{self.resolved_base_url}/webapi/entry.cgi"
+            try:
+                resp = requests.get(
+                    entry_url,
+                    params={
+                        "api": "SYNO.FileStation.Download",
+                        "version": "2",
+                        "method": "download",
+                        "path": remote_path,
+                        "mode": "download",
+                        "_sid": self.sid,
+                    },
+                    verify=False,
+                    timeout=20,
+                    stream=True,
+                )
+                if resp.status_code == 200 and "application/json" not in resp.headers.get("Content-Type", ""):
+                    os.makedirs(os.path.dirname(os.path.abspath(local_target)), exist_ok=True)
+                    with open(local_target, "wb") as f:
+                        for chunk in resp.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                    return True
+                elif attempt == 0:
+                    ok, _ = self.connect_and_login(force_relogin=True)
+                    if not ok:
+                        return False
+            except Exception:
+                if attempt == 0:
+                    self.connect_and_login(force_relogin=True)
         return False
 

@@ -1023,6 +1023,7 @@ def get_settings_dict() -> Dict[str, str]:
 
 
 def update_settings_dict(new_settings: Dict[str, str]) -> None:
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = get_db()
     try:
         for k, v in new_settings.items():
@@ -1030,6 +1031,10 @@ def update_settings_dict(new_settings: Dict[str, str]) -> None:
                 "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (k, str(v)),
             )
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('settings_updated_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (now_str,),
+        )
         conn.commit()
     finally:
         conn.close()

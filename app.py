@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from database import init_db, get_db, hash_password, get_settings_dict, update_settings_dict
+from database import init_db, get_db, hash_password, get_settings_dict, update_settings_dict, DB_PATH
 from synology_client import SynologyClient
 from email_service import check_and_send_pm_notifications, check_and_send_avl_notifications, send_smtp_email
 
@@ -95,13 +95,19 @@ def _get_user_state_paths() -> List[str]:
 
 def sync_users_state_to_storage(upload_async: bool = True):
     """
-    Persist current `users` and `deleted_users` from SQLite DB to local storage,
-    OS home directory backup, AND Synology NAS (/DATA/ISO/System_DB/users_state.json)
-    so user creations/deletions survive container rebuilds and GitHub deployments
+    Persist current `users`, `deleted_users`, and `settings` (including SMTP Server configuration)
+    from SQLite DB to local storage, OS home directory backup, AND Synology NAS
+    (/DATA/ISO/System_DB/users_state.json and /DATA/ISO/System_DB/iso_audit.db)
+    so user creations/deletions and SMTP settings survive container rebuilds and GitHub deployments
     without holding any DB lock.
     """
     try:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        state_dir = os.path.join(STORAGE_DIR, "ISO", "System_DB")
+        os.makedirs(state_dir, exist_ok=True)
+        state_file = os.path.join(state_dir, "users_state.json")
+        db_backup_file = os.path.join(state_dir, "iso_audit_backup.db")
+
         conn = get_db()
         try:
             conn.execute(
@@ -109,18 +115,45 @@ def sync_users_state_to_storage(upload_async: bool = True):
             )
             users_rows = [dict(r) for r in conn.execute("SELECT * FROM users ORDER BY id ASC").fetchall()]
             del_rows = [dict(r) for r in conn.execute("SELECT * FROM deleted_users").fetchall()]
-            upd_row = conn.execute("SELECT value FROM settings WHERE key = 'users_updated_at'").fetchone()
-            updated_at = (upd_row["value"] if upd_row and upd_row["value"] else "") or now_str
+            settings_rows = conn.execute("SELECT key, value FROM settings").fetchall()
+            settings_map = {r["key"]: r["value"] for r in settings_rows}
+            updated_at = settings_map.get("users_updated_at") or now_str
+            settings_updated_at = settings_map.get("settings_updated_at") or ""
+
+            # Create a safe online SQLite backup copy for uploading to Synology NAS
+            try:
+                bck_conn = sqlite3.connect(db_backup_file)
+                try:
+                    conn.backup(bck_conn)
+                finally:
+                    bck_conn.close()
+            except Exception:
+                pass
         finally:
             conn.close()
 
-        state_dir = os.path.join(STORAGE_DIR, "ISO", "System_DB")
-        os.makedirs(state_dir, exist_ok=True)
-        state_file = os.path.join(state_dir, "users_state.json")
+        # Never overwrite non-empty saved SMTP credentials with empty default values
+        for p in _get_user_state_paths():
+            if p and os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f_old:
+                        old_payload = json.load(f_old)
+                    old_settings = old_payload.get("settings") or {}
+                    if isinstance(old_settings, dict):
+                        for k in ("smtp_user", "smtp_password", "smtp_host", "smtp_port", "smtp_sender", "pm_advance_days"):
+                            if not settings_map.get(k) and old_settings.get(k):
+                                settings_map[k] = old_settings[k]
+                        if not settings_updated_at and old_payload.get("settings_updated_at"):
+                            settings_updated_at = old_payload["settings_updated_at"]
+                except Exception:
+                    pass
+
         payload = {
             "updated_at": updated_at,
+            "settings_updated_at": settings_updated_at or now_str,
             "users": users_rows,
             "deleted_users": del_rows,
+            "settings": settings_map,
         }
         for p in _get_user_state_paths():
             try:
@@ -134,6 +167,8 @@ def sync_users_state_to_storage(upload_async: bool = True):
             try:
                 syno = get_synology_client()
                 syno.upload_file(state_file, "System_DB", "users_state.json")
+                if os.path.exists(db_backup_file):
+                    syno.upload_file(db_backup_file, "System_DB", "iso_audit.db")
             except Exception:
                 pass
 
@@ -147,28 +182,82 @@ def sync_users_state_to_storage(upload_async: bool = True):
 
 def restore_users_state_from_storage():
     """
-    On startup, compare user state across SQLite DB, local persistent files, and Synology NAS
-    (/DATA/ISO/System_DB/users_state.json), and apply the newest state so created/deleted users
-    are never reset when code or version is updated.
+    On startup, compare user & settings state across SQLite DB, local persistent files,
+    and Synology NAS (/DATA/ISO/System_DB/users_state.json & /DATA/ISO/System_DB/iso_audit.db),
+    and apply the newest state so created/deleted users and SMTP settings are never reset
+    when code or version is updated.
     """
     try:
         state_dir = os.path.join(STORAGE_DIR, "ISO", "System_DB")
         os.makedirs(state_dir, exist_ok=True)
         remote_tmp_file = os.path.join(state_dir, "users_state_remote.json")
+        remote_db_file = os.path.join(state_dir, "iso_audit_remote.db")
 
-        # Always try to fetch latest users_state.json from Synology NAS on startup
+        # Always try to fetch latest users_state.json and iso_audit.db from Synology NAS on startup
         try:
             syno = get_synology_client()
             ok, _ = syno.connect_and_login()
             if ok and syno.resolved_root_path:
-                remote_state = f"{syno.resolved_root_path.rstrip('/')}/System_DB/users_state.json"
-                syno.download_file_to_local(remote_state, remote_tmp_file)
+                root_p = syno.resolved_root_path.rstrip("/")
+                syno.download_file_to_local(f"{root_p}/System_DB/users_state.json", remote_tmp_file)
+                syno.download_file_to_local(f"{root_p}/System_DB/iso_audit.db", remote_db_file)
         except Exception:
             pass
+
+        # If a remote SQLite DB backup exists on Synology NAS, merge any custom data & settings from it first
+        if os.path.exists(remote_db_file) and os.path.getsize(remote_db_file) > 4096:
+            try:
+                rconn = sqlite3.connect(remote_db_file)
+                rconn.row_factory = sqlite3.Row
+                lconn = get_db()
+                try:
+                    # Merge settings from remote DB if non-empty
+                    r_settings = {r["key"]: r["value"] for r in rconn.execute("SELECT key, value FROM settings").fetchall()}
+                    l_settings = {r["key"]: r["value"] for r in lconn.execute("SELECT key, value FROM settings").fetchall()}
+                    r_set_ts = r_settings.get("settings_updated_at", "")
+                    l_set_ts = l_settings.get("settings_updated_at", "")
+                    for k, v in r_settings.items():
+                        if v and (not l_settings.get(k) or r_set_ts >= l_set_ts):
+                            lconn.execute(
+                                "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                                (k, str(v)),
+                            )
+
+                    # Merge documents, revisions, employees, trainings, equipment, pm_schedules, vendors, evaluations
+                    for tbl, uk in [
+                        ("documents", "doc_code"),
+                        ("employees", "emp_code"),
+                        ("equipment", "equip_code"),
+                        ("vendors", "vendor_code"),
+                        ("vendor_evaluations", "eval_code"),
+                    ]:
+                        try:
+                            l_cols = [c["name"] for c in lconn.execute(f"PRAGMA table_info({tbl})").fetchall()]
+                            r_rows = [dict(r) for r in rconn.execute(f"SELECT * FROM {tbl}").fetchall()]
+                            for rr in r_rows:
+                                common_cols = [c for c in l_cols if c in rr and c != "id"]
+                                col_names = ", ".join(common_cols)
+                                placeholders = ", ".join(["?"] * len(common_cols))
+                                update_clause = ", ".join([f"{c} = excluded.{c}" for c in common_cols if c != uk])
+                                vals = [rr[c] for c in common_cols]
+                                lconn.execute(
+                                    f"INSERT INTO {tbl} ({col_names}) VALUES ({placeholders}) ON CONFLICT({uk}) DO UPDATE SET {update_clause}",
+                                    vals,
+                                )
+                        except Exception:
+                            pass
+                    lconn.commit()
+                finally:
+                    lconn.close()
+                    rconn.close()
+            except Exception:
+                pass
 
         candidate_files = [remote_tmp_file] + _get_user_state_paths()
         best_data = None
         best_updated_at = ""
+        best_settings = None
+        best_settings_ts = ""
 
         for fpath in candidate_files:
             if not fpath or not os.path.exists(fpath):
@@ -182,6 +271,14 @@ def restore_users_state_from_storage():
                     if best_data is None or ts >= best_updated_at:
                         best_data = d
                         best_updated_at = ts
+                s_dict = d.get("settings")
+                if isinstance(s_dict, dict) and len(s_dict) > 0:
+                    s_ts = str(d.get("settings_updated_at") or d.get("updated_at") or "")
+                    has_smtp = bool(s_dict.get("smtp_user") or s_dict.get("smtp_password"))
+                    best_has_smtp = bool(best_settings and (best_settings.get("smtp_user") or best_settings.get("smtp_password")))
+                    if best_settings is None or (has_smtp and not best_has_smtp) or (has_smtp == best_has_smtp and s_ts >= best_settings_ts):
+                        best_settings = s_dict
+                        best_settings_ts = s_ts
             except Exception:
                 pass
 
@@ -190,89 +287,108 @@ def restore_users_state_from_storage():
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS deleted_users (username TEXT PRIMARY KEY, deleted_at TEXT NOT NULL)"
             )
+            # 1. Restore settings (SMTP Server & Synology configuration)
+            if best_settings:
+                cur_settings = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings").fetchall()}
+                db_set_ts = cur_settings.get("settings_updated_at", "")
+                for k, v in best_settings.items():
+                    if k in ("users_updated_at", "users_initialized"):
+                        continue
+                    # Restore if DB value is empty or saved settings are at least as recent as DB
+                    if (v != "" and not cur_settings.get(k)) or (not db_set_ts or best_settings_ts >= db_set_ts):
+                        if v != "" or k not in ("smtp_user", "smtp_password"):
+                            conn.execute(
+                                "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                                (k, str(v)),
+                            )
+                if best_settings_ts and best_settings_ts >= db_set_ts:
+                    conn.execute(
+                        "INSERT INTO settings (key, value) VALUES ('settings_updated_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (best_settings_ts,),
+                    )
+
+            # 2. Restore users and deleted_users
             upd_row = conn.execute("SELECT value FROM settings WHERE key = 'users_updated_at'").fetchone()
             db_updated_at = (upd_row["value"] if upd_row and upd_row["value"] else "")
 
-            # If SQLite DB already has a strictly newer timestamp than any external state file, keep SQLite DB as-is
-            if db_updated_at and (best_data is None or db_updated_at > best_updated_at):
-                return
+            if best_data is not None and (not db_updated_at or best_updated_at >= db_updated_at):
+                saved_users = best_data.get("users", [])
+                saved_deleted = best_data.get("deleted_users", [])
 
-            if best_data is None:
-                return
-
-            saved_users = best_data.get("users", [])
-            saved_deleted = best_data.get("deleted_users", [])
-
-            for d in saved_deleted:
-                if d.get("username"):
-                    conn.execute(
-                        "INSERT OR REPLACE INTO deleted_users (username, deleted_at) VALUES (?, ?)",
-                        (d["username"], d.get("deleted_at", "")),
-                    )
-
-            deleted_set = {d["username"].strip().lower() for d in saved_deleted if d.get("username")}
-            saved_usernames_lower = {
-                (u.get("username") or "").strip().lower()
-                for u in saved_users
-                if (u.get("username") or "").strip() and (u.get("username") or "").strip().lower() not in deleted_set
-            }
-
-            # Remove any user that was deleted OR is not present in saved_users (prevents deleted default users from re-appearing)
-            existing_db_users = conn.execute("SELECT id, username FROM users").fetchall()
-            for row in existing_db_users:
-                uname_low = (row["username"] or "").strip().lower()
-                if uname_low in deleted_set or (saved_usernames_lower and uname_low not in saved_usernames_lower):
-                    conn.execute("DELETE FROM users WHERE id = ?", (row["id"],))
-                    if uname_low not in deleted_set:
+                for d in saved_deleted:
+                    if d.get("username"):
                         conn.execute(
                             "INSERT OR REPLACE INTO deleted_users (username, deleted_at) VALUES (?, ?)",
-                            (row["username"], best_updated_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                            (d["username"], d.get("deleted_at", "")),
                         )
 
-            for u in saved_users:
-                uname = (u.get("username") or "").strip()
-                if not uname or uname.lower() in deleted_set:
-                    continue
-                conn.execute(
-                    """
-                    INSERT INTO users (username, password_hash, full_name, role, department, email, is_active, must_change_password, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(username) DO UPDATE SET
-                        password_hash = excluded.password_hash,
-                        full_name = excluded.full_name,
-                        role = excluded.role,
-                        department = excluded.department,
-                        email = excluded.email,
-                        is_active = excluded.is_active,
-                        must_change_password = excluded.must_change_password
-                    """,
-                    (
-                        uname,
-                        u.get("password_hash", ""),
-                        u.get("full_name", uname),
-                        u.get("role", "Viewer"),
-                        u.get("department", "General"),
-                        u.get("email", ""),
-                        int(u.get("is_active", 1)),
-                        int(u.get("must_change_password", 0)),
-                        u.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                    ),
-                )
-            if best_updated_at:
-                conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('users_updated_at', ?)", (best_updated_at,))
-            conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('users_initialized', '1')")
+                deleted_set = {d["username"].strip().lower() for d in saved_deleted if d.get("username")}
+                saved_usernames_lower = {
+                    (u.get("username") or "").strip().lower()
+                    for u in saved_users
+                    if (u.get("username") or "").strip() and (u.get("username") or "").strip().lower() not in deleted_set
+                }
+
+                existing_db_users = conn.execute("SELECT id, username FROM users").fetchall()
+                for row in existing_db_users:
+                    uname_low = (row["username"] or "").strip().lower()
+                    if uname_low in deleted_set or (saved_usernames_lower and uname_low not in saved_usernames_lower):
+                        conn.execute("DELETE FROM users WHERE id = ?", (row["id"],))
+                        if uname_low not in deleted_set:
+                            conn.execute(
+                                "INSERT OR REPLACE INTO deleted_users (username, deleted_at) VALUES (?, ?)",
+                                (row["username"], best_updated_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                            )
+
+                for u in saved_users:
+                    uname = (u.get("username") or "").strip()
+                    if not uname or uname.lower() in deleted_set:
+                        continue
+                    conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, full_name, role, department, email, is_active, must_change_password, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(username) DO UPDATE SET
+                            password_hash = excluded.password_hash,
+                            full_name = excluded.full_name,
+                            role = excluded.role,
+                            department = excluded.department,
+                            email = excluded.email,
+                            is_active = excluded.is_active,
+                            must_change_password = excluded.must_change_password
+                        """,
+                        (
+                            uname,
+                            u.get("password_hash", ""),
+                            u.get("full_name", uname),
+                            u.get("role", "Viewer"),
+                            u.get("department", "General"),
+                            u.get("email", ""),
+                            int(u.get("is_active", 1)),
+                            int(u.get("must_change_password", 0)),
+                            u.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                        ),
+                    )
+                if best_updated_at:
+                    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('users_updated_at', ?)", (best_updated_at,))
+                conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('users_initialized', '1')")
+
             conn.commit()
         finally:
             conn.close()
 
-        # Keep local mirror files synchronized with the restored state
-        for p in _get_user_state_paths():
-            try:
-                os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
-                with open(p, "w", encoding="utf-8") as f:
-                    json.dump(best_data, f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
+        # Sync the merged state back to local mirror files
+        if best_data is not None:
+            if best_settings:
+                best_data["settings"] = best_settings
+                best_data["settings_updated_at"] = best_settings_ts
+            for p in _get_user_state_paths():
+                try:
+                    os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
+                    with open(p, "w", encoding="utf-8") as f:
+                        json.dump(best_data, f, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -952,6 +1068,7 @@ async def create_or_update_document(
     finally:
         conn.close()
 
+    sync_users_state_to_storage(upload_async=True)
     return {
         "success": True,
         "doc_id": target_id,
@@ -1115,6 +1232,7 @@ def submit_document_for_approval(doc_id: int, request: Request):
     </div>
     """
     email_ok, email_msg = send_smtp_email(target_email, subject, html_body, equip_code=doc["doc_code"])
+    sync_users_state_to_storage(upload_async=True)
     return {
         "success": True,
         "doc_id": doc_id,
@@ -1180,6 +1298,7 @@ def approve_document(doc_id: int, request: Request):
     finally:
         conn.close()
 
+    sync_users_state_to_storage(upload_async=True)
     return {
         "success": True,
         "doc_id": doc_id,
@@ -2498,6 +2617,10 @@ def get_settings(request: Request):
 def save_settings(request: Request, payload: Dict[str, str]):
     require_admin(request)
     update_settings_dict(payload)
+    SynologyClient._cached_working_url = None
+    SynologyClient._cached_sid = None
+    SynologyClient._cached_root_path = None
+    sync_users_state_to_storage(upload_async=True)
     return {"success": True, "message": "บันทึกการตั้งค่าระบบเรียบร้อย"}
 
 
