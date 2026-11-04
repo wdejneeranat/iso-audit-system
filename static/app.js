@@ -415,7 +415,7 @@ async function loadDocuments() {
             // Show "Submit to Management for Approval" button when document is added / not Active
             const submitApprovalBtn =
                 d.status !== "Active" && d.status !== "Obsolete"
-                    ? `<button onclick="submitDocForApproval(${d.id}, '${d.doc_code}')" class="text-[11px] bg-indigo-600 hover:bg-indigo-700 text-white font-semibold px-2.5 py-1.5 rounded-lg shadow-sm transition inline-flex items-center gap-1 mr-1 mb-1" title="ส่งอีเมลขออนุมัติไปยัง wdejneeranat.d@sunlogisgroup.com และเปลี่ยนสถานะเป็น Waiting for Approval">
+                    ? `<button onclick="submitDocForApproval(${d.id}, '${d.doc_code}')" class="text-[11px] bg-indigo-600 hover:bg-indigo-700 text-white font-semibold px-2.5 py-1.5 rounded-lg shadow-sm transition inline-flex items-center gap-1 mr-1 mb-1" title="ส่งอีเมลขออนุมัติไปยัง watcharagorn.d@sunlogisgroup.com และเปลี่ยนสถานะเป็น Waiting for Approval">
                         <i class="fa-solid fa-paper-plane"></i> Submit to Management for Approval
                        </button>`
                     : "";
@@ -481,7 +481,7 @@ async function loadDocuments() {
 
 async function submitDocForApproval(docId, docCode) {
     try {
-        showToast(`กำลังส่งขออนุมัติเอกสาร ${docCode} ไปยัง wdejneeranat.d@sunlogisgroup.com...`);
+        showToast(`กำลังส่งขออนุมัติเอกสาร ${docCode} ไปยัง watcharagorn.d@sunlogisgroup.com...`);
         const res = await fetch(`/api/documents/${docId}/submit-approval`, {
             method: "POST",
             headers: apiHeaders(),

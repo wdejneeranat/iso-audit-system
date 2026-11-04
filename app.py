@@ -1072,8 +1072,8 @@ def submit_document_for_approval(doc_id: int, request: Request):
     finally:
         conn.close()
 
-    # Send email notification to Management (wdejneeranat.d@sunlogisgroup.com) outside DB transaction
-    target_email = "wdejneeranat.d@sunlogisgroup.com"
+    # Send email notification to Management (watcharagorn.d@sunlogisgroup.com) outside DB transaction
+    target_email = "watcharagorn.d@sunlogisgroup.com"
     subject = f"[ISO Document Approval Request] ขออนุมัติเอกสาร Master File: {doc['doc_code']} - {doc['doc_title']}"
     html_body = f"""
     <div style="font-family: 'Sarabun', Arial, sans-serif; max-width: 680px; margin: 0 auto; border: 1px solid #cbd5e1; border-radius: 12px; overflow: hidden;">
