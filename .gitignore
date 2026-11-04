@@ -7,3 +7,7 @@ venv/
 nas_compose.yaml
 check_compose.yaml
 *.log
+storage/ISO/System_DB/
+*.db-wal
+*.db-shm
+*.db-journal

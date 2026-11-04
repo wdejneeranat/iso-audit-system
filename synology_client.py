@@ -14,6 +14,8 @@ class SynologyClient:
     Also maintains a local mirror under ./storage/ISO for instant access and fallback.
     """
 
+    _cached_working_url: Optional[str] = None
+
     def __init__(
         self,
         quickconnect_id: str = "Sunlogis",
@@ -35,9 +37,10 @@ class SynologyClient:
         self.resolved_root_path: Optional[str] = None
         self.last_error: Optional[str] = None
 
-    def _probe_dsm_url(self, base_url: str, timeout: float = 4.0) -> bool:
+    def _probe_dsm_url(self, base_url: str, timeout: float = 3.0) -> bool:
         try:
             url = f"{base_url.rstrip('/')}/webapi/query.cgi"
+            probe_timeout = 1.2 if any(p in base_url for p in ("172.16.", "192.168.", "10.")) else timeout
             resp = requests.get(
                 url,
                 params={
@@ -47,7 +50,7 @@ class SynologyClient:
                     "query": "SYNO.API.Auth,SYNO.FileStation.List",
                 },
                 verify=False,
-                timeout=timeout,
+                timeout=probe_timeout,
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -123,8 +126,8 @@ class SynologyClient:
                 if relay_ip and relay_port:
                     candidates.append(f"https://{relay_ip}:{relay_port}")
 
-                # 3. Request tunnel from control_host if needed
-                if control_host and not relay_port:
+                # 3. Always request active tunnel from control_host so cloud servers (e.g. Render) can connect via Relay
+                if control_host:
                     try:
                         tunnel_payload = dict(payload)
                         tunnel_payload["command"] = "request_tunnel"
@@ -135,10 +138,13 @@ class SynologyClient:
                             verify=False,
                         ).json()
                         t_svc = t_resp.get("service", {})
-                        t_dn = t_svc.get("relay_dn") or t_svc.get("relay_ip")
+                        t_dn = t_svc.get("relay_dn") or t_svc.get("relay_dualstack") or t_svc.get("relay_ip")
                         t_port = t_svc.get("relay_port")
                         if t_dn and t_port:
-                            candidates.append(f"https://{t_dn}:{t_port}")
+                            candidates.insert(0, f"https://{t_dn}:{t_port}")
+                        t_ip = t_svc.get("relay_ip")
+                        if t_ip and t_port:
+                            candidates.append(f"https://{t_ip}:{t_port}")
                     except Exception:
                         pass
 
@@ -166,12 +172,16 @@ class SynologyClient:
 
     def connect_and_login(self) -> Tuple[bool, str]:
         """Find working DSM endpoint, authenticate, and resolve the target ISO root folder."""
-        candidates = self.resolve_quickconnect()
         working_url = None
-        for url in candidates:
-            if self._probe_dsm_url(url):
-                working_url = url
-                break
+        if SynologyClient._cached_working_url and self._probe_dsm_url(SynologyClient._cached_working_url):
+            working_url = SynologyClient._cached_working_url
+        else:
+            candidates = self.resolve_quickconnect()
+            for url in candidates:
+                if self._probe_dsm_url(url):
+                    working_url = url
+                    SynologyClient._cached_working_url = url
+                    break
 
         if not working_url:
             self.last_error = "ไม่สามารถเชื่อมต่อ Synology NAS ได้ (ตรวจสอบ QuickConnect หรือเครือข่าย)"

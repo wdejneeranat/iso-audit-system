@@ -80,13 +80,28 @@ def create_minimal_pdf(file_path: str, title_text: str, subtitle_text: str) -> N
         f.write(pdf_bytes)
 
 
+def _get_user_state_paths() -> List[str]:
+    paths = [
+        os.path.join(STORAGE_DIR, "ISO", "System_DB", "users_state.json"),
+    ]
+    try:
+        home_state_dir = os.path.join(os.path.expanduser("~"), ".sunlogis_iso_audit")
+        os.makedirs(home_state_dir, exist_ok=True)
+        paths.append(os.path.join(home_state_dir, "users_state.json"))
+    except Exception:
+        pass
+    return paths
+
+
 def sync_users_state_to_storage(upload_async: bool = True):
     """
-    Persist current `users` and `deleted_users` from SQLite DB to local storage
-    AND Synology NAS (/DATA/ISO/System_DB/users_state.json) so user creations/deletions
-    survive container rebuilds and GitHub deployments without holding any DB lock.
+    Persist current `users` and `deleted_users` from SQLite DB to local storage,
+    OS home directory backup, AND Synology NAS (/DATA/ISO/System_DB/users_state.json)
+    so user creations/deletions survive container rebuilds and GitHub deployments
+    without holding any DB lock.
     """
     try:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn = get_db()
         try:
             conn.execute(
@@ -94,6 +109,8 @@ def sync_users_state_to_storage(upload_async: bool = True):
             )
             users_rows = [dict(r) for r in conn.execute("SELECT * FROM users ORDER BY id ASC").fetchall()]
             del_rows = [dict(r) for r in conn.execute("SELECT * FROM deleted_users").fetchall()]
+            upd_row = conn.execute("SELECT value FROM settings WHERE key = 'users_updated_at'").fetchone()
+            updated_at = (upd_row["value"] if upd_row and upd_row["value"] else "") or now_str
         finally:
             conn.close()
 
@@ -101,12 +118,17 @@ def sync_users_state_to_storage(upload_async: bool = True):
         os.makedirs(state_dir, exist_ok=True)
         state_file = os.path.join(state_dir, "users_state.json")
         payload = {
-            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_at": updated_at,
             "users": users_rows,
             "deleted_users": del_rows,
         }
-        with open(state_file, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+        for p in _get_user_state_paths():
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
+                with open(p, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
 
         def _upload_state():
             try:
@@ -125,41 +147,62 @@ def sync_users_state_to_storage(upload_async: bool = True):
 
 def restore_users_state_from_storage():
     """
-    On startup, if a saved users_state.json exists in local storage or Synology NAS,
-    restore created/deleted users into SQLite DB so they are never lost across deployments.
+    On startup, compare user state across SQLite DB, local persistent files, and Synology NAS
+    (/DATA/ISO/System_DB/users_state.json), and apply the newest state so created/deleted users
+    are never reset when code or version is updated.
     """
     try:
         state_dir = os.path.join(STORAGE_DIR, "ISO", "System_DB")
         os.makedirs(state_dir, exist_ok=True)
-        state_file = os.path.join(state_dir, "users_state.json")
+        remote_tmp_file = os.path.join(state_dir, "users_state_remote.json")
 
-        # Only download from Synology if local state_file does not exist yet
-        if not os.path.exists(state_file):
+        # Always try to fetch latest users_state.json from Synology NAS on startup
+        try:
+            syno = get_synology_client()
+            ok, _ = syno.connect_and_login()
+            if ok and syno.resolved_root_path:
+                remote_state = f"{syno.resolved_root_path.rstrip('/')}/System_DB/users_state.json"
+                syno.download_file_to_local(remote_state, remote_tmp_file)
+        except Exception:
+            pass
+
+        candidate_files = [remote_tmp_file] + _get_user_state_paths()
+        best_data = None
+        best_updated_at = ""
+
+        for fpath in candidate_files:
+            if not fpath or not os.path.exists(fpath):
+                continue
             try:
-                syno = get_synology_client()
-                ok, _ = syno.connect_and_login()
-                if ok and syno.resolved_root_path:
-                    remote_state = f"{syno.resolved_root_path.rstrip('/')}/System_DB/users_state.json"
-                    syno.download_file_to_local(remote_state, state_file)
+                with open(fpath, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+                u_list = d.get("users")
+                if isinstance(u_list, list) and len(u_list) > 0:
+                    ts = str(d.get("updated_at") or "")
+                    if best_data is None or ts >= best_updated_at:
+                        best_data = d
+                        best_updated_at = ts
             except Exception:
                 pass
-
-        if not os.path.exists(state_file):
-            return
-
-        with open(state_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        saved_users = data.get("users")
-        saved_deleted = data.get("deleted_users", [])
-        if not isinstance(saved_users, list) or len(saved_users) == 0:
-            return
 
         conn = get_db()
         try:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS deleted_users (username TEXT PRIMARY KEY, deleted_at TEXT NOT NULL)"
             )
+            upd_row = conn.execute("SELECT value FROM settings WHERE key = 'users_updated_at'").fetchone()
+            db_updated_at = (upd_row["value"] if upd_row and upd_row["value"] else "")
+
+            # If SQLite DB already has a strictly newer timestamp than any external state file, keep SQLite DB as-is
+            if db_updated_at and (best_data is None or db_updated_at > best_updated_at):
+                return
+
+            if best_data is None:
+                return
+
+            saved_users = best_data.get("users", [])
+            saved_deleted = best_data.get("deleted_users", [])
+
             for d in saved_deleted:
                 if d.get("username"):
                     conn.execute(
@@ -167,9 +210,24 @@ def restore_users_state_from_storage():
                         (d["username"], d.get("deleted_at", "")),
                     )
 
-            deleted_set = {d["username"].lower() for d in saved_deleted if d.get("username")}
-            for uname_low in deleted_set:
-                conn.execute("DELETE FROM users WHERE LOWER(username) = ?", (uname_low,))
+            deleted_set = {d["username"].strip().lower() for d in saved_deleted if d.get("username")}
+            saved_usernames_lower = {
+                (u.get("username") or "").strip().lower()
+                for u in saved_users
+                if (u.get("username") or "").strip() and (u.get("username") or "").strip().lower() not in deleted_set
+            }
+
+            # Remove any user that was deleted OR is not present in saved_users (prevents deleted default users from re-appearing)
+            existing_db_users = conn.execute("SELECT id, username FROM users").fetchall()
+            for row in existing_db_users:
+                uname_low = (row["username"] or "").strip().lower()
+                if uname_low in deleted_set or (saved_usernames_lower and uname_low not in saved_usernames_lower):
+                    conn.execute("DELETE FROM users WHERE id = ?", (row["id"],))
+                    if uname_low not in deleted_set:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO deleted_users (username, deleted_at) VALUES (?, ?)",
+                            (row["username"], best_updated_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                        )
 
             for u in saved_users:
                 uname = (u.get("username") or "").strip()
@@ -200,10 +258,21 @@ def restore_users_state_from_storage():
                         u.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
                     ),
                 )
+            if best_updated_at:
+                conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('users_updated_at', ?)", (best_updated_at,))
             conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('users_initialized', '1')")
             conn.commit()
         finally:
             conn.close()
+
+        # Keep local mirror files synchronized with the restored state
+        for p in _get_user_state_paths():
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
+                with open(p, "w", encoding="utf-8") as f:
+                    json.dump(best_data, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -213,7 +282,6 @@ def bootstrap_sample_files_and_synology():
     Ensure sample documents have local PDF files named by doc_code and sync to Synology.
     IMPORTANT: Never keep a SQLite connection open while creating files or uploading to Synology!
     """
-    restore_users_state_from_storage()
 
     conn = get_db()
     try:
@@ -398,6 +466,7 @@ async def periodic_pm_alert_scheduler():
 @app.on_event("startup")
 async def on_startup():
     init_db()
+    restore_users_state_from_storage()
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, bootstrap_sample_files_and_synology)
     asyncio.create_task(periodic_pm_alert_scheduler())
@@ -520,10 +589,12 @@ def change_password(payload: ChangePasswordRequest):
         if user["password_hash"] != hash_password(payload.current_password):
             raise HTTPException(status_code=401, detail="รหัสผ่านปัจจุบันไม่ถูกต้อง")
 
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute(
             "UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?",
             (hash_password(new_pw), user["id"]),
         )
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('users_updated_at', ?)", (now_str,))
         conn.commit()
     finally:
         conn.close()
@@ -582,6 +653,7 @@ def create_user(request: Request, payload: CreateUserRequest):
                     now_str,
                 ),
             )
+            conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('users_updated_at', ?)", (now_str,))
             conn.commit()
             last_err = None
             break
@@ -620,6 +692,7 @@ def delete_user(user_id: int, request: Request):
             (target["username"], now_str),
         )
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('users_updated_at', ?)", (now_str,))
         conn.commit()
     finally:
         conn.close()
@@ -948,6 +1021,174 @@ def delete_document(doc_id: int):
     conn.commit()
     conn.close()
     return {"success": True}
+
+
+@app.post("/api/documents/{doc_id}/submit-approval")
+def submit_document_for_approval(doc_id: int, request: Request):
+    user = get_current_user_from_header(request)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    submitted_by = user.get("username") or "system"
+
+    conn = get_db()
+    try:
+        doc_row = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
+        if not doc_row:
+            raise HTTPException(status_code=404, detail="ไม่พบเอกสารในระบบ")
+        doc = dict(doc_row)
+
+        conn.execute(
+            """
+            UPDATE documents
+            SET status = 'Waiting for Approval',
+                submitted_by = ?,
+                submitted_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (submitted_by, now_str, now_str, doc_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO document_revisions (
+                doc_id, doc_code, revision_no, effective_date, revision_date,
+                change_summary, file_name, local_path, synology_path, updated_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                doc_id,
+                doc["doc_code"],
+                doc["revision_no"],
+                doc["effective_date"],
+                doc["revision_date"],
+                f"Submit to Management for Approval (สถานะ: Waiting for Approval) โดย {submitted_by}",
+                doc.get("file_name", ""),
+                doc.get("local_path", ""),
+                doc.get("synology_path", ""),
+                submitted_by,
+                now_str,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Send email notification to Management (wdejneeranat.d@sunlogisgroup.com) outside DB transaction
+    target_email = "wdejneeranat.d@sunlogisgroup.com"
+    subject = f"[ISO Document Approval Request] ขออนุมัติเอกสาร Master File: {doc['doc_code']} - {doc['doc_title']}"
+    html_body = f"""
+    <div style="font-family: 'Sarabun', Arial, sans-serif; max-width: 680px; margin: 0 auto; border: 1px solid #cbd5e1; border-radius: 12px; overflow: hidden;">
+        <div style="background: #1e3a8a; color: #ffffff; padding: 18px 24px;">
+            <h2 style="margin: 0; font-size: 18px;">SUNLOGIS ISO 9001 - ขออนุมัติเอกสาร Master File (Submit to Management for Approval)</h2>
+            <p style="margin: 4px 0 0; font-size: 13px; color: #93c5fd;">สถานะปัจจุบัน: Waiting for Approval</p>
+        </div>
+        <div style="padding: 20px 24px; background: #ffffff; color: #1e293b; font-size: 14px; line-height: 1.6;">
+            <p>เรียน <strong>คุณ Watcharagorn (Management / System Admin)</strong>,</p>
+            <p>มีการส่งเอกสาร ISO Master File เพื่อขออนุมัติจากฝ่ายบริหาร โดยมีรายละเอียดดังนี้:</p>
+            <table style="width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13px;">
+                <tr>
+                    <td style="padding: 8px 12px; background: #f8fafc; border: 1px solid #e2e8f0; width: 35%;"><strong>หมายเลขเอกสาร (Doc Code)</strong></td>
+                    <td style="padding: 8px 12px; border: 1px solid #e2e8f0; font-weight: bold; color: #1d4ed8;">{doc['doc_code']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 12px; background: #f8fafc; border: 1px solid #e2e8f0;"><strong>ชื่อเอกสาร (Document Title)</strong></td>
+                    <td style="padding: 8px 12px; border: 1px solid #e2e8f0;">{doc['doc_title']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 12px; background: #f8fafc; border: 1px solid #e2e8f0;"><strong>หมวดหมู่ / แก้ไขครั้งที่</strong></td>
+                    <td style="padding: 8px 12px; border: 1px solid #e2e8f0;">{doc['category']} / Rev.{int(doc['revision_no']):02d}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 12px; background: #f8fafc; border: 1px solid #e2e8f0;"><strong>วันที่เริ่มใช้ (Effective Date)</strong></td>
+                    <td style="padding: 8px 12px; border: 1px solid #e2e8f0;">{doc['effective_date']}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 12px; background: #f8fafc; border: 1px solid #e2e8f0;"><strong>ผู้ส่งขออนุมัติ (Submitted By)</strong></td>
+                    <td style="padding: 8px 12px; border: 1px solid #e2e8f0;">{submitted_by} ({user.get('full_name', '')}) เมื่อ {now_str}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 12px; background: #f8fafc; border: 1px solid #e2e8f0;"><strong>สถานะเอกสาร</strong></td>
+                    <td style="padding: 8px 12px; border: 1px solid #e2e8f0;"><span style="background: #fef3c7; color: #b45309; padding: 3px 8px; border-radius: 6px; font-weight: bold;">Waiting for Approval</span></td>
+                </tr>
+            </table>
+            <p style="margin-top: 14px;">กรุณาเข้าสู่ระบบด้วยผู้ใช้งาน <strong>Watcharagorn</strong> ไปที่เมนู <strong>Master File เอกสาร ISO</strong> และคลิกปุ่ม <strong>Approve</strong> เพื่อเปลี่ยนสถานะเอกสารเป็น <strong>Active</strong></p>
+        </div>
+    </div>
+    """
+    email_ok, email_msg = send_smtp_email(target_email, subject, html_body, equip_code=doc["doc_code"])
+    return {
+        "success": True,
+        "doc_id": doc_id,
+        "doc_code": doc["doc_code"],
+        "status": "Waiting for Approval",
+        "email_sent": email_ok,
+        "email_recipient": target_email,
+        "message": f"ส่งขออนุมัติเอกสาร {doc['doc_code']} (สถานะ: Waiting for Approval) และแจ้งเตือนไปยัง {target_email} เรียบร้อยแล้ว ({email_msg})",
+    }
+
+
+@app.post("/api/documents/{doc_id}/approve")
+def approve_document(doc_id: int, request: Request):
+    user = get_current_user_from_header(request)
+    uname = (user.get("username") or "").strip()
+    if uname.lower() != "watcharagorn":
+        raise HTTPException(
+            status_code=403,
+            detail="เฉพาะผู้ใช้งาน Watcharagorn (Management) เท่านั้นที่มีสิทธิ์กดอนุมัติ (Approve) เอกสาร",
+        )
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_db()
+    try:
+        doc_row = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
+        if not doc_row:
+            raise HTTPException(status_code=404, detail="ไม่พบเอกสารในระบบ")
+        doc = dict(doc_row)
+
+        conn.execute(
+            """
+            UPDATE documents
+            SET status = 'Active',
+                approved_by = ?,
+                approved_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (uname, now_str, now_str, doc_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO document_revisions (
+                doc_id, doc_code, revision_no, effective_date, revision_date,
+                change_summary, file_name, local_path, synology_path, updated_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                doc_id,
+                doc["doc_code"],
+                doc["revision_no"],
+                doc["effective_date"],
+                doc["revision_date"],
+                f"Approved by {uname} (เปลี่ยนสถานะจาก Waiting for Approval -> Active)",
+                doc.get("file_name", ""),
+                doc.get("local_path", ""),
+                doc.get("synology_path", ""),
+                uname,
+                now_str,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "success": True,
+        "doc_id": doc_id,
+        "doc_code": doc["doc_code"],
+        "status": "Active",
+        "approved_by": uname,
+        "approved_at": now_str,
+        "message": f"อนุมัติเอกสาร {doc['doc_code']} สำเร็จ เปลี่ยนสถานะเป็น Active เรียบร้อยแล้ว",
+    }
 
 
 # ==========================================

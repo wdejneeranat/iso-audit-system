@@ -402,15 +402,44 @@ async function loadDocuments() {
                 `
                 : `<div class="text-xs text-rose-600 font-medium mt-1"><i class="fa-solid fa-ban"></i> บัญชี ${currentUser.username} (${currentUser.role}) ไม่มีสิทธิ์เปิดไฟล์นี้</div>`;
 
+            const statusBadgeMap = {
+                Active: `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200"><i class="fa-solid fa-circle-check"></i> Active</span>`,
+                "Waiting for Approval": `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-300"><i class="fa-solid fa-hourglass-half"></i> Waiting for Approval</span>`,
+                Draft: `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700 border border-slate-300"><i class="fa-solid fa-file-pen"></i> Draft</span>`,
+                Obsolete: `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-rose-100 text-rose-700 border border-rose-200"><i class="fa-solid fa-ban"></i> Obsolete</span>`,
+            };
+            const docStatusBadge = statusBadgeMap[d.status] || `<span class="text-[11px] px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-semibold">${d.status}</span>`;
+
+            const isWatcharagorn = currentUser && (currentUser.username || "").trim().toLowerCase() === "watcharagorn";
+
+            // Show "Submit to Management for Approval" button when document is added / not Active
+            const submitApprovalBtn =
+                d.status !== "Active" && d.status !== "Obsolete"
+                    ? `<button onclick="submitDocForApproval(${d.id}, '${d.doc_code}')" class="text-[11px] bg-indigo-600 hover:bg-indigo-700 text-white font-semibold px-2.5 py-1.5 rounded-lg shadow-sm transition inline-flex items-center gap-1 mr-1 mb-1" title="ส่งอีเมลขออนุมัติไปยัง wdejneeranat.d@sunlogisgroup.com และเปลี่ยนสถานะเป็น Waiting for Approval">
+                        <i class="fa-solid fa-paper-plane"></i> Submit to Management for Approval
+                       </button>`
+                    : "";
+
+            // Show "Approve" button when logged in as Watcharagorn for Waiting for Approval documents
+            const approveBtn =
+                isWatcharagorn && d.status === "Waiting for Approval"
+                    ? `<button onclick="approveDocument(${d.id}, '${d.doc_code}')" class="text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-3 py-1.5 rounded-lg shadow-sm transition inline-flex items-center gap-1 mr-1 mb-1" title="อนุมัติเอกสารเพื่อเปลี่ยนสถานะจาก Waiting for Approval เป็น Active">
+                        <i class="fa-solid fa-check-double"></i> Approve
+                       </button>`
+                    : "";
+
             return `
             <tr class="hover:bg-slate-50/80 transition">
                 <td class="py-3.5 px-3 align-top">
                     <span class="font-mono font-bold text-blue-700 bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-200">${d.doc_code}</span>
-                    <div class="text-[11px] text-slate-400 mt-1">หมวด: ${d.category} | ${d.status}</div>
+                    <div class="text-[11px] text-slate-500 mt-1.5">หมวด: <strong>${d.category}</strong></div>
+                    <div class="mt-1">${docStatusBadge}</div>
                 </td>
                 <td class="py-3.5 px-3 align-top">
                     <div class="font-semibold text-slate-900">${d.doc_title}</div>
                     ${d.notes ? `<div class="text-xs text-slate-500 mt-0.5">${d.notes}</div>` : ""}
+                    ${d.submitted_by && d.status === "Waiting for Approval" ? `<div class="text-[11px] text-amber-700 mt-1"><i class="fa-solid fa-envelope-circle-check"></i> ส่งขออนุมัติโดย: <strong>${d.submitted_by}</strong> (${d.submitted_at || ""})</div>` : ""}
+                    ${d.approved_by && d.status === "Active" ? `<div class="text-[11px] text-emerald-700 mt-1"><i class="fa-solid fa-user-check"></i> Approved by: <strong>${d.approved_by}</strong> (${d.approved_at || ""})</div>` : ""}
                 </td>
                 <td class="py-3.5 px-3 align-top text-center font-mono text-xs text-slate-700">${d.effective_date}</td>
                 <td class="py-3.5 px-3 align-top text-center">
@@ -429,21 +458,64 @@ async function loadDocuments() {
                     ${synoBadge}
                     ${fileActions}
                 </td>
-                <td class="py-3.5 px-3 align-top text-right whitespace-nowrap">
-                    <button onclick="openRevisionHistory(${d.id}, '${d.doc_code}')" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg mr-1" title="ประวัติการแก้ไข">
-                        <i class="fa-solid fa-clock-rotate-left"></i>
-                    </button>
-                    <button onclick="editDocument(${d.id})" class="text-xs bg-amber-50 hover:bg-amber-100 text-amber-700 px-2.5 py-1.5 rounded-lg mr-1" title="แก้ไข / อัปโหลดไฟล์ใหม่">
-                        <i class="fa-solid fa-pen-to-square"></i>
-                    </button>
-                    <button onclick="deleteDocument(${d.id})" class="text-xs bg-rose-50 hover:bg-rose-100 text-rose-600 px-2.5 py-1.5 rounded-lg" title="ลบเอกสาร">
-                        <i class="fa-solid fa-trash"></i>
-                    </button>
+                <td class="py-3.5 px-3 align-top text-right">
+                    <div class="flex flex-wrap items-center justify-end gap-1">
+                        ${submitApprovalBtn}
+                        ${approveBtn}
+                        <button onclick="openRevisionHistory(${d.id}, '${d.doc_code}')" class="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1.5 rounded-lg" title="ประวัติการแก้ไข">
+                            <i class="fa-solid fa-clock-rotate-left"></i>
+                        </button>
+                        <button onclick="editDocument(${d.id})" class="text-xs bg-amber-50 hover:bg-amber-100 text-amber-700 px-2.5 py-1.5 rounded-lg" title="แก้ไข / อัปโหลดไฟล์ใหม่">
+                            <i class="fa-solid fa-pen-to-square"></i>
+                        </button>
+                        <button onclick="deleteDocument(${d.id})" class="text-xs bg-rose-50 hover:bg-rose-100 text-rose-600 px-2.5 py-1.5 rounded-lg" title="ลบเอกสาร">
+                            <i class="fa-solid fa-trash"></i>
+                        </button>
+                    </div>
                 </td>
             </tr>
             `;
         })
         .join("");
+}
+
+async function submitDocForApproval(docId, docCode) {
+    try {
+        showToast(`กำลังส่งขออนุมัติเอกสาร ${docCode} ไปยัง wdejneeranat.d@sunlogisgroup.com...`);
+        const res = await fetch(`/api/documents/${docId}/submit-approval`, {
+            method: "POST",
+            headers: apiHeaders(),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            showToast(data.detail || "ไม่สามารถส่งขออนุมัติเอกสารได้", true);
+            return;
+        }
+        await loadDocuments();
+        await loadDashboard();
+        showToast(data.message || `ส่งขออนุมัติเอกสาร ${docCode} สำเร็จ (สถานะ: Waiting for Approval)`);
+    } catch (err) {
+        showToast("เกิดข้อผิดพลาดในการส่งขออนุมัติเอกสาร", true);
+    }
+}
+
+async function approveDocument(docId, docCode) {
+    try {
+        const res = await fetch(`/api/documents/${docId}/approve`, {
+            method: "POST",
+            headers: apiHeaders(),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            showToast(data.detail || "ไม่สามารถอนุมัติเอกสารได้", true);
+            return;
+        }
+        await loadDocuments();
+        await loadDashboard();
+        showToast(data.message || `อนุมัติเอกสาร ${docCode} เป็นสถานะ Active เรียบร้อยแล้ว`);
+    } catch (err) {
+        showToast("เกิดข้อผิดพลาดในการอนุมัติเอกสาร", true);
+    }
 }
 
 function updateExpectedFilenamePreview() {
@@ -504,6 +576,8 @@ function openDocumentModal() {
     document.getElementById("doc_category").value = "PM";
     const deptEl = document.getElementById("doc_dept_code");
     if (deptEl) deptEl.value = "DC";
+    const statusEl = document.getElementById("doc_status");
+    if (statusEl) statusEl.value = "Draft";
     const today = new Date().toISOString().split("T")[0];
     document.getElementById("doc_effective_date").value = today;
     document.getElementById("doc_revision_date").value = today;

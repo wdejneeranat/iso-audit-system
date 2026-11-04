@@ -93,11 +93,20 @@ def init_db() -> None:
             synology_path TEXT DEFAULT '',
             synology_synced INTEGER NOT NULL DEFAULT 0,
             uploaded_by TEXT DEFAULT 'admin',
+            submitted_by TEXT DEFAULT '',
+            submitted_at TEXT DEFAULT '',
+            approved_by TEXT DEFAULT '',
+            approved_at TEXT DEFAULT '',
             notes TEXT DEFAULT '',
             updated_at TEXT NOT NULL
         )
         """
     )
+
+    doc_cols = [c["name"] for c in cur.execute("PRAGMA table_info(documents)").fetchall()]
+    for col_name in ("submitted_by", "submitted_at", "approved_by", "approved_at"):
+        if col_name not in doc_cols:
+            cur.execute(f"ALTER TABLE documents ADD COLUMN {col_name} TEXT DEFAULT ''")
 
     # 3. Document Revisions History table
     cur.execute(
