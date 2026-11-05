@@ -93,13 +93,59 @@ def _get_user_state_paths() -> List[str]:
     return paths
 
 
+_sync_upload_lock = threading.Lock()
+
+ALL_SYNC_TABLES = [
+    "documents",
+    "document_revisions",
+    "employees",
+    "employee_files",
+    "training_records",
+    "equipment",
+    "pm_schedules",
+    "vendors",
+    "vendor_evaluations",
+    "email_logs",
+]
+
+
+def touch_db_updated(conn: sqlite3.Connection) -> str:
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_updated_at', ?)", (now_str,))
+    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_seeded', '1')")
+    return now_str
+
+
+def _update_code_seq_highwater(conn: sqlite3.Connection, key_prefix: str, code_prefix: str, full_code: str):
+    try:
+        m = re.match(rf"^{re.escape(code_prefix)}(\d+)$", (full_code or "").strip().upper())
+        if m:
+            num = int(m.group(1))
+            s_key = f"{key_prefix}{code_prefix.rstrip('-').upper()}"
+            cur_row = conn.execute("SELECT value FROM settings WHERE key = ?", (s_key,)).fetchone()
+            cur_val = int(cur_row["value"]) if (cur_row and str(cur_row["value"]).isdigit()) else 0
+            if num > cur_val:
+                conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (s_key, str(num)))
+    except Exception:
+        pass
+
+
+def _get_code_seq_highwater(conn: sqlite3.Connection, key_prefix: str, code_prefix: str) -> int:
+    try:
+        s_key = f"{key_prefix}{code_prefix.rstrip('-').upper()}"
+        cur_row = conn.execute("SELECT value FROM settings WHERE key = ?", (s_key,)).fetchone()
+        return int(cur_row["value"]) if (cur_row and str(cur_row["value"]).isdigit()) else 0
+    except Exception:
+        return 0
+
+
 def sync_users_state_to_storage(upload_async: bool = True):
     """
-    Persist current `users`, `deleted_users`, and `settings` (including SMTP Server configuration)
-    from SQLite DB to local storage, OS home directory backup, AND Synology NAS
-    (/DATA/ISO/System_DB/users_state.json and /DATA/ISO/System_DB/iso_audit.db)
-    so user creations/deletions and SMTP settings survive container rebuilds and GitHub deployments
-    without holding any DB lock.
+    Persist ALL system data (`users`, `deleted_users`, `settings`, `documents`, `document_revisions`,
+    `employees`, `employee_files`, `training_records`, `equipment`, `pm_schedules`, `vendors`,
+    `vendor_evaluations`, `email_logs`, and running number sequences) from SQLite DB to local storage,
+    OS home directory backup, AND Synology NAS (/DATA/ISO/System_DB/users_state.json and /DATA/ISO/System_DB/iso_audit.db)
+    so all records and running numbers survive container rebuilds and GitHub deployments.
     """
     try:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -119,6 +165,34 @@ def sync_users_state_to_storage(upload_async: bool = True):
             settings_map = {r["key"]: r["value"] for r in settings_rows}
             updated_at = settings_map.get("users_updated_at") or now_str
             settings_updated_at = settings_map.get("settings_updated_at") or ""
+            db_updated_at = settings_map.get("db_updated_at") or now_str
+
+            tables_data: Dict[str, List[Dict[str, Any]]] = {}
+            for tbl in ALL_SYNC_TABLES:
+                try:
+                    tables_data[tbl] = [dict(r) for r in conn.execute(f"SELECT * FROM {tbl} ORDER BY id ASC").fetchall()]
+                except Exception:
+                    tables_data[tbl] = []
+
+            # Ensure sequence high-water marks reflect all current codes in DB
+            for d in tables_data.get("documents", []):
+                dc = (d.get("doc_code") or "").strip().upper()
+                if "-" in dc:
+                    pfx = dc.rsplit("-", 1)[0] + "-"
+                    _update_code_seq_highwater(conn, "seq_doc_", pfx, dc)
+            for v in tables_data.get("vendors", []):
+                vc = (v.get("vendor_code") or "").strip().upper()
+                if "-" in vc:
+                    pfx = vc.rsplit("-", 1)[0] + "-"
+                    _update_code_seq_highwater(conn, "seq_vendor_", pfx, vc)
+            for ve in tables_data.get("vendor_evaluations", []):
+                ec = (ve.get("eval_code") or "").strip().upper()
+                if "-" in ec:
+                    pfx = ec.rsplit("-", 1)[0] + "-"
+                    _update_code_seq_highwater(conn, "seq_eval_", pfx, ec)
+            conn.commit()
+            settings_rows = conn.execute("SELECT key, value FROM settings").fetchall()
+            settings_map = {r["key"]: r["value"] for r in settings_rows}
 
             # Create a safe online SQLite backup copy for uploading to Synology NAS
             try:
@@ -132,7 +206,7 @@ def sync_users_state_to_storage(upload_async: bool = True):
         finally:
             conn.close()
 
-        # Never overwrite non-empty saved SMTP credentials with empty default values
+        # Never overwrite non-empty saved SMTP credentials or higher sequence numbers with empty/lower values
         for p in _get_user_state_paths():
             if p and os.path.exists(p):
                 try:
@@ -143,6 +217,11 @@ def sync_users_state_to_storage(upload_async: bool = True):
                         for k in ("smtp_user", "smtp_password", "smtp_host", "smtp_port", "smtp_sender", "pm_advance_days"):
                             if not settings_map.get(k) and old_settings.get(k):
                                 settings_map[k] = old_settings[k]
+                        for k, v in old_settings.items():
+                            if k.startswith(("seq_doc_", "seq_vendor_", "seq_eval_")) and str(v).isdigit():
+                                cur_v = int(settings_map.get(k, "0")) if str(settings_map.get(k, "0")).isdigit() else 0
+                                if int(v) > cur_v:
+                                    settings_map[k] = str(v)
                         if not settings_updated_at and old_payload.get("settings_updated_at"):
                             settings_updated_at = old_payload["settings_updated_at"]
                 except Exception:
@@ -151,9 +230,11 @@ def sync_users_state_to_storage(upload_async: bool = True):
         payload = {
             "updated_at": updated_at,
             "settings_updated_at": settings_updated_at or now_str,
+            "db_updated_at": db_updated_at,
             "users": users_rows,
             "deleted_users": del_rows,
             "settings": settings_map,
+            "tables": tables_data,
         }
         for p in _get_user_state_paths():
             try:
@@ -164,13 +245,14 @@ def sync_users_state_to_storage(upload_async: bool = True):
                 pass
 
         def _upload_state():
-            try:
-                syno = get_synology_client()
-                syno.upload_file(state_file, "System_DB", "users_state.json")
-                if os.path.exists(db_backup_file):
-                    syno.upload_file(db_backup_file, "System_DB", "iso_audit.db")
-            except Exception:
-                pass
+            with _sync_upload_lock:
+                try:
+                    syno = get_synology_client()
+                    syno.upload_file(state_file, "System_DB", "users_state.json")
+                    if os.path.exists(db_backup_file):
+                        syno.upload_file(db_backup_file, "System_DB", "iso_audit.db")
+                except Exception:
+                    pass
 
         if upload_async:
             threading.Thread(target=_upload_state, daemon=True).start()
@@ -182,10 +264,11 @@ def sync_users_state_to_storage(upload_async: bool = True):
 
 def restore_users_state_from_storage():
     """
-    On startup, compare user & settings state across SQLite DB, local persistent files,
-    and Synology NAS (/DATA/ISO/System_DB/users_state.json & /DATA/ISO/System_DB/iso_audit.db),
-    and apply the newest state so created/deleted users and SMTP settings are never reset
-    when code or version is updated.
+    On startup, compare user, settings, and all application tables across SQLite DB,
+    local persistent files, and Synology NAS (/DATA/ISO/System_DB/users_state.json & /DATA/ISO/System_DB/iso_audit.db),
+    and apply the newest state so created/edited/deleted documents, AVL vendors & evaluations,
+    employees, training plans & evidence, equipment, users, SMTP settings, and running numbers
+    are never reset when code or version is updated.
     """
     try:
         state_dir = os.path.join(STORAGE_DIR, "ISO", "System_DB")
@@ -204,60 +287,13 @@ def restore_users_state_from_storage():
         except Exception:
             pass
 
-        # If a remote SQLite DB backup exists on Synology NAS, merge any custom data & settings from it first
-        if os.path.exists(remote_db_file) and os.path.getsize(remote_db_file) > 4096:
-            try:
-                rconn = sqlite3.connect(remote_db_file)
-                rconn.row_factory = sqlite3.Row
-                lconn = get_db()
-                try:
-                    # Merge settings from remote DB if non-empty
-                    r_settings = {r["key"]: r["value"] for r in rconn.execute("SELECT key, value FROM settings").fetchall()}
-                    l_settings = {r["key"]: r["value"] for r in lconn.execute("SELECT key, value FROM settings").fetchall()}
-                    r_set_ts = r_settings.get("settings_updated_at", "")
-                    l_set_ts = l_settings.get("settings_updated_at", "")
-                    for k, v in r_settings.items():
-                        if v and (not l_settings.get(k) or r_set_ts >= l_set_ts):
-                            lconn.execute(
-                                "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                                (k, str(v)),
-                            )
-
-                    # Merge documents, revisions, employees, trainings, equipment, pm_schedules, vendors, evaluations
-                    for tbl, uk in [
-                        ("documents", "doc_code"),
-                        ("employees", "emp_code"),
-                        ("equipment", "equip_code"),
-                        ("vendors", "vendor_code"),
-                        ("vendor_evaluations", "eval_code"),
-                    ]:
-                        try:
-                            l_cols = [c["name"] for c in lconn.execute(f"PRAGMA table_info({tbl})").fetchall()]
-                            r_rows = [dict(r) for r in rconn.execute(f"SELECT * FROM {tbl}").fetchall()]
-                            for rr in r_rows:
-                                common_cols = [c for c in l_cols if c in rr and c != "id"]
-                                col_names = ", ".join(common_cols)
-                                placeholders = ", ".join(["?"] * len(common_cols))
-                                update_clause = ", ".join([f"{c} = excluded.{c}" for c in common_cols if c != uk])
-                                vals = [rr[c] for c in common_cols]
-                                lconn.execute(
-                                    f"INSERT INTO {tbl} ({col_names}) VALUES ({placeholders}) ON CONFLICT({uk}) DO UPDATE SET {update_clause}",
-                                    vals,
-                                )
-                        except Exception:
-                            pass
-                    lconn.commit()
-                finally:
-                    lconn.close()
-                    rconn.close()
-            except Exception:
-                pass
-
         candidate_files = [remote_tmp_file] + _get_user_state_paths()
         best_data = None
         best_updated_at = ""
         best_settings = None
         best_settings_ts = ""
+        best_tables = None
+        best_tables_ts = ""
 
         for fpath in candidate_files:
             if not fpath or not os.path.exists(fpath):
@@ -279,6 +315,42 @@ def restore_users_state_from_storage():
                     if best_settings is None or (has_smtp and not best_has_smtp) or (has_smtp == best_has_smtp and s_ts >= best_settings_ts):
                         best_settings = s_dict
                         best_settings_ts = s_ts
+                t_dict = d.get("tables")
+                if isinstance(t_dict, dict) and len(t_dict) > 0:
+                    t_ts = str(d.get("db_updated_at") or d.get("updated_at") or "")
+                    if best_tables is None or t_ts >= best_tables_ts:
+                        best_tables = t_dict
+                        best_tables_ts = t_ts
+            except Exception:
+                pass
+
+        # If a remote SQLite DB backup exists on Synology NAS and best_tables wasn't in JSON yet (or remote DB is newer), extract tables from remote_db_file
+        if os.path.exists(remote_db_file) and os.path.getsize(remote_db_file) > 4096:
+            try:
+                rconn = sqlite3.connect(remote_db_file)
+                rconn.row_factory = sqlite3.Row
+                try:
+                    r_settings = {r["key"]: r["value"] for r in rconn.execute("SELECT key, value FROM settings").fetchall()}
+                    r_db_ts = str(r_settings.get("db_updated_at") or r_settings.get("settings_updated_at") or r_settings.get("users_updated_at") or "")
+                    if best_tables is None or (r_db_ts and r_db_ts > best_tables_ts):
+                        extracted_tables: Dict[str, List[Dict[str, Any]]] = {}
+                        for tbl in ALL_SYNC_TABLES:
+                            try:
+                                extracted_tables[tbl] = [dict(r) for r in rconn.execute(f"SELECT * FROM {tbl} ORDER BY id ASC").fetchall()]
+                            except Exception:
+                                pass
+                        if extracted_tables:
+                            best_tables = extracted_tables
+                            best_tables_ts = r_db_ts
+                    if best_settings is None:
+                        best_settings = r_settings
+                        best_settings_ts = str(r_settings.get("settings_updated_at") or "")
+                    else:
+                        for k, v in r_settings.items():
+                            if v and not best_settings.get(k):
+                                best_settings[k] = v
+                finally:
+                    rconn.close()
             except Exception:
                 pass
 
@@ -287,12 +359,56 @@ def restore_users_state_from_storage():
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS deleted_users (username TEXT PRIMARY KEY, deleted_at TEXT NOT NULL)"
             )
-            # 1. Restore settings (SMTP Server & Synology configuration)
+            # 0. Restore all application tables (documents, revisions, employees, trainings, AVL vendors & evaluations, equipment, PM, email_logs)
+            if best_tables:
+                cur_db_ts_row = conn.execute("SELECT value FROM settings WHERE key = 'db_updated_at'").fetchone()
+                local_db_ts = (cur_db_ts_row["value"] if cur_db_ts_row and cur_db_ts_row["value"] else "")
+                if not local_db_ts or not best_tables_ts or best_tables_ts >= local_db_ts:
+                    conn.execute("PRAGMA foreign_keys = OFF")
+                    try:
+                        for tbl in ALL_SYNC_TABLES:
+                            if tbl not in best_tables or not isinstance(best_tables[tbl], list):
+                                continue
+                            rows_to_restore = best_tables[tbl]
+                            # Only replace table if remote snapshot actually tracked this table
+                            l_cols = [c["name"] for c in conn.execute(f"PRAGMA table_info({tbl})").fetchall()]
+                            if not l_cols:
+                                continue
+                            conn.execute(f"DELETE FROM {tbl}")
+                            for rr in rows_to_restore:
+                                common_cols = [c for c in l_cols if c in rr]
+                                if not common_cols:
+                                    continue
+                                col_names = ", ".join(common_cols)
+                                placeholders = ", ".join(["?"] * len(common_cols))
+                                vals = [rr[c] for c in common_cols]
+                                conn.execute(
+                                    f"INSERT OR REPLACE INTO {tbl} ({col_names}) VALUES ({placeholders})",
+                                    vals,
+                                )
+                        if best_tables_ts:
+                            conn.execute(
+                                "INSERT OR REPLACE INTO settings (key, value) VALUES ('db_updated_at', ?)",
+                                (best_tables_ts,),
+                            )
+                        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_seeded', '1')")
+                    finally:
+                        conn.execute("PRAGMA foreign_keys = ON")
+
+            # 1. Restore settings (SMTP Server, Synology configuration & sequence high-water marks)
             if best_settings:
                 cur_settings = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings").fetchall()}
                 db_set_ts = cur_settings.get("settings_updated_at", "")
                 for k, v in best_settings.items():
-                    if k in ("users_updated_at", "users_initialized"):
+                    if k in ("users_updated_at", "users_initialized", "db_updated_at", "db_seeded"):
+                        continue
+                    if k.startswith(("seq_doc_", "seq_vendor_", "seq_eval_")) and str(v).isdigit():
+                        cur_seq = int(cur_settings.get(k, "0")) if str(cur_settings.get(k, "0")).isdigit() else 0
+                        if int(v) > cur_seq:
+                            conn.execute(
+                                "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                                (k, str(v)),
+                            )
                         continue
                     # Restore if DB value is empty or saved settings are at least as recent as DB
                     if (v != "" and not cur_settings.get(k)) or (not db_set_ts or best_settings_ts >= db_set_ts):
@@ -306,6 +422,20 @@ def restore_users_state_from_storage():
                         "INSERT INTO settings (key, value) VALUES ('settings_updated_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                         (best_settings_ts,),
                     )
+
+            # Update sequence high-water marks from restored tables so running numbers never go backwards
+            for d in conn.execute("SELECT doc_code FROM documents").fetchall():
+                dc = (d["doc_code"] or "").strip().upper()
+                if "-" in dc:
+                    _update_code_seq_highwater(conn, "seq_doc_", dc.rsplit("-", 1)[0] + "-", dc)
+            for v in conn.execute("SELECT vendor_code FROM vendors").fetchall():
+                vc = (v["vendor_code"] or "").strip().upper()
+                if "-" in vc:
+                    _update_code_seq_highwater(conn, "seq_vendor_", vc.rsplit("-", 1)[0] + "-", vc)
+            for ve in conn.execute("SELECT eval_code FROM vendor_evaluations").fetchall():
+                ec = (ve["eval_code"] or "").strip().upper()
+                if "-" in ec:
+                    _update_code_seq_highwater(conn, "seq_eval_", ec.rsplit("-", 1)[0] + "-", ec)
 
             # 2. Restore users and deleted_users
             upd_row = conn.execute("SELECT value FROM settings WHERE key = 'users_updated_at'").fetchone()
@@ -377,18 +507,8 @@ def restore_users_state_from_storage():
         finally:
             conn.close()
 
-        # Sync the merged state back to local mirror files
-        if best_data is not None:
-            if best_settings:
-                best_data["settings"] = best_settings
-                best_data["settings_updated_at"] = best_settings_ts
-            for p in _get_user_state_paths():
-                try:
-                    os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
-                    with open(p, "w", encoding="utf-8") as f:
-                        json.dump(best_data, f, ensure_ascii=False, indent=2)
-                except Exception:
-                    pass
+        # Sync the merged state back to local mirror files & Synology if tables weren't stored in JSON yet
+        sync_users_state_to_storage(upload_async=True)
     except Exception:
         pass
 
@@ -867,8 +987,8 @@ def generate_next_doc_code(conn: sqlite3.Connection, category: str, dept_code: s
         cat = "PM"
     dept = (dept_code or "DC").strip().upper()
     prefix = f"{cat}-{dept}-"
+    max_num = _get_code_seq_highwater(conn, "seq_doc_", prefix)
     rows = conn.execute("SELECT doc_code FROM documents WHERE doc_code LIKE ?", (f"{prefix}%",)).fetchall()
-    max_num = 0
     for r in rows:
         code_str = r["doc_code"] or ""
         m = re.match(rf"^{re.escape(prefix)}(\d+)$", code_str.strip().upper())
@@ -876,6 +996,26 @@ def generate_next_doc_code(conn: sqlite3.Connection, category: str, dept_code: s
             num = int(m.group(1))
             if num > max_num:
                 max_num = num
+    rev_rows = conn.execute("SELECT doc_code FROM document_revisions WHERE doc_code LIKE ?", (f"{prefix}%",)).fetchall()
+    for r in rev_rows:
+        code_str = r["doc_code"] or ""
+        m = re.match(rf"^{re.escape(prefix)}(\d+)$", code_str.strip().upper())
+        if m:
+            num = int(m.group(1))
+            if num > max_num:
+                max_num = num
+    try:
+        docs_dir = os.path.join(STORAGE_DIR, "ISO", "Documents")
+        if os.path.isdir(docs_dir):
+            for fname in os.listdir(docs_dir):
+                base_name = os.path.splitext(fname)[0].strip().upper()
+                m = re.match(rf"^{re.escape(prefix)}(\d+)$", base_name)
+                if m:
+                    num = int(m.group(1))
+                    if num > max_num:
+                        max_num = num
+    except Exception:
+        pass
     return f"{prefix}{max_num + 1:03d}"
 
 
@@ -1064,6 +1204,9 @@ async def create_or_update_document(
                 now_str,
             ),
         )
+        if "-" in clean_code:
+            _update_code_seq_highwater(conn, "seq_doc_", clean_code.rsplit("-", 1)[0] + "-", clean_code)
+        touch_db_updated(conn)
         conn.commit()
     finally:
         conn.close()
@@ -1134,9 +1277,17 @@ def download_or_preview_document(
 @app.delete("/api/documents/{doc_id}")
 def delete_document(doc_id: int):
     conn = get_db()
-    conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
-    conn.commit()
-    conn.close()
+    try:
+        doc_row = conn.execute("SELECT doc_code FROM documents WHERE id = ?", (doc_id,)).fetchone()
+        if doc_row and doc_row["doc_code"] and "-" in doc_row["doc_code"]:
+            dc = doc_row["doc_code"].strip().upper()
+            _update_code_seq_highwater(conn, "seq_doc_", dc.rsplit("-", 1)[0] + "-", dc)
+        conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+        touch_db_updated(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    sync_users_state_to_storage(upload_async=True)
     return {"success": True}
 
 
@@ -1185,6 +1336,7 @@ def submit_document_for_approval(doc_id: int, request: Request):
                 now_str,
             ),
         )
+        touch_db_updated(conn)
         conn.commit()
     finally:
         conn.close()
@@ -1294,6 +1446,7 @@ def approve_document(doc_id: int, request: Request):
                 now_str,
             ),
         )
+        touch_db_updated(conn)
         conn.commit()
     finally:
         conn.close()
@@ -1470,10 +1623,27 @@ async def save_employee(
             )
             target_emp_id = cur.lastrowid
 
+        touch_db_updated(conn)
         conn.commit()
     finally:
         conn.close()
+    sync_users_state_to_storage(upload_async=True)
     return {"success": True, "emp_id": target_emp_id, "message": msg}
+
+
+@app.delete("/api/employees/{emp_id}")
+def delete_employee(emp_id: int):
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM training_records WHERE emp_id = ?", (emp_id,))
+        conn.execute("DELETE FROM employee_files WHERE emp_id = ?", (emp_id,))
+        conn.execute("DELETE FROM employees WHERE id = ?", (emp_id,))
+        touch_db_updated(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    sync_users_state_to_storage(upload_async=True)
+    return {"success": True, "message": "ลบข้อมูลพนักงานเรียบร้อย"}
 
 
 @app.get("/api/employees/{emp_id}/application-file")
@@ -1481,9 +1651,24 @@ def get_employee_application_file(emp_id: int):
     conn = get_db()
     emp = conn.execute("SELECT * FROM employees WHERE id = ?", (emp_id,)).fetchone()
     conn.close()
-    if not emp or not emp["application_local_path"] or not os.path.exists(emp["application_local_path"]):
+    if not emp:
+        raise HTTPException(status_code=404, detail="ไม่พบข้อมูลพนักงาน")
+    local_path = emp["application_local_path"]
+    if (not local_path or not os.path.exists(local_path)) and emp["application_synology_path"]:
+        fallback_local = os.path.join(
+            STORAGE_DIR,
+            "ISO",
+            "HR_Employees",
+            emp["emp_code"],
+            "Application",
+            emp["application_file_name"] or f"{emp['emp_code']}_Application.pdf",
+        )
+        syno = get_synology_client()
+        if syno.download_file_to_local(emp["application_synology_path"], fallback_local):
+            local_path = fallback_local
+    if not local_path or not os.path.exists(local_path):
         raise HTTPException(status_code=404, detail="ไม่พบไฟล์ใบสมัครงาน")
-    return FileResponse(emp["application_local_path"], filename=emp["application_file_name"])
+    return FileResponse(local_path, filename=emp["application_file_name"] or f"{emp['emp_code']}_Application.pdf")
 
 
 @app.post("/api/trainings")
@@ -1602,28 +1787,53 @@ async def save_training_record(
                     now_str,
                 ),
             )
+        touch_db_updated(conn)
         conn.commit()
     finally:
         conn.close()
+    sync_users_state_to_storage(upload_async=True)
     return {"success": True, "message": msg}
 
 
 @app.get("/api/trainings/{training_id}/evidence")
 def get_training_evidence_file(training_id: int):
     conn = get_db()
-    tr = conn.execute("SELECT * FROM training_records WHERE id = ?", (training_id,)).fetchone()
+    tr = conn.execute(
+        "SELECT t.*, e.emp_code FROM training_records t LEFT JOIN employees e ON t.emp_id = e.id WHERE t.id = ?",
+        (training_id,),
+    ).fetchone()
     conn.close()
-    if not tr or not tr["evidence_local_path"] or not os.path.exists(tr["evidence_local_path"]):
+    if not tr:
+        raise HTTPException(status_code=404, detail="ไม่พบข้อมูลการฝึกอบรม")
+    local_path = tr["evidence_local_path"]
+    if (not local_path or not os.path.exists(local_path)) and tr["evidence_synology_path"]:
+        emp_code = tr["emp_code"] or "EMP"
+        fallback_local = os.path.join(
+            STORAGE_DIR,
+            "ISO",
+            "HR_Employees",
+            emp_code,
+            "Training",
+            tr["evidence_file_name"] or f"{emp_code}_Evidence.pdf",
+        )
+        syno = get_synology_client()
+        if syno.download_file_to_local(tr["evidence_synology_path"], fallback_local):
+            local_path = fallback_local
+    if not local_path or not os.path.exists(local_path):
         raise HTTPException(status_code=404, detail="ไม่พบไฟล์หลักฐานการฝึกอบรม")
-    return FileResponse(tr["evidence_local_path"], filename=tr["evidence_file_name"])
+    return FileResponse(local_path, filename=tr["evidence_file_name"] or "Training_Evidence.pdf")
 
 
 @app.delete("/api/trainings/{training_id}")
 def delete_training_record(training_id: int):
     conn = get_db()
-    conn.execute("DELETE FROM training_records WHERE id = ?", (training_id,))
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute("DELETE FROM training_records WHERE id = ?", (training_id,))
+        touch_db_updated(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    sync_users_state_to_storage(upload_async=True)
     return {"success": True}
 
 
@@ -1675,63 +1885,67 @@ class EquipmentPayload(BaseModel):
 @app.post("/api/equipment")
 def save_equipment(payload: EquipmentPayload):
     conn = get_db()
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    clean_code = payload.equip_code.strip().upper()
+    try:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        clean_code = payload.equip_code.strip().upper()
 
-    if payload.id:
-        conn.execute(
-            """
-            UPDATE equipment
-            SET equip_code = ?, equip_name = ?, category = ?, brand_model = ?, serial_no = ?,
-                location = ?, purchase_install_date = ?, warranty_expiry = ?, vendor = ?,
-                responsible_person = ?, responsible_email = ?, status = ?, notes = ?
-            WHERE id = ?
-            """,
-            (
-                clean_code,
-                payload.equip_name.strip(),
-                payload.category,
-                payload.brand_model.strip(),
-                payload.serial_no.strip(),
-                payload.location.strip(),
-                payload.purchase_install_date,
-                payload.warranty_expiry,
-                payload.vendor.strip(),
-                payload.responsible_person.strip(),
-                payload.responsible_email.strip(),
-                payload.status,
-                payload.notes,
-                payload.id,
-            ),
-        )
-    else:
-        conn.execute(
-            """
-            INSERT INTO equipment (
-                equip_code, equip_name, category, brand_model, serial_no, location,
-                purchase_install_date, warranty_expiry, vendor, responsible_person,
-                responsible_email, status, notes, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                clean_code,
-                payload.equip_name.strip(),
-                payload.category,
-                payload.brand_model.strip(),
-                payload.serial_no.strip(),
-                payload.location.strip(),
-                payload.purchase_install_date,
-                payload.warranty_expiry,
-                payload.vendor.strip(),
-                payload.responsible_person.strip(),
-                payload.responsible_email.strip(),
-                payload.status,
-                payload.notes,
-                now_str,
-            ),
-        )
-    conn.commit()
-    conn.close()
+        if payload.id:
+            conn.execute(
+                """
+                UPDATE equipment
+                SET equip_code = ?, equip_name = ?, category = ?, brand_model = ?, serial_no = ?,
+                    location = ?, purchase_install_date = ?, warranty_expiry = ?, vendor = ?,
+                    responsible_person = ?, responsible_email = ?, status = ?, notes = ?
+                WHERE id = ?
+                """,
+                (
+                    clean_code,
+                    payload.equip_name.strip(),
+                    payload.category,
+                    payload.brand_model.strip(),
+                    payload.serial_no.strip(),
+                    payload.location.strip(),
+                    payload.purchase_install_date,
+                    payload.warranty_expiry,
+                    payload.vendor.strip(),
+                    payload.responsible_person.strip(),
+                    payload.responsible_email.strip(),
+                    payload.status,
+                    payload.notes,
+                    payload.id,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO equipment (
+                    equip_code, equip_name, category, brand_model, serial_no, location,
+                    purchase_install_date, warranty_expiry, vendor, responsible_person,
+                    responsible_email, status, notes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    clean_code,
+                    payload.equip_name.strip(),
+                    payload.category,
+                    payload.brand_model.strip(),
+                    payload.serial_no.strip(),
+                    payload.location.strip(),
+                    payload.purchase_install_date,
+                    payload.warranty_expiry,
+                    payload.vendor.strip(),
+                    payload.responsible_person.strip(),
+                    payload.responsible_email.strip(),
+                    payload.status,
+                    payload.notes,
+                    now_str,
+                ),
+            )
+        touch_db_updated(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    sync_users_state_to_storage(upload_async=True)
     return {"success": True, "message": "บันทึกทะเบียนเครื่องจักร/อุปกรณ์สำเร็จ"}
 
 
@@ -1884,20 +2098,40 @@ async def save_pm_schedule(
                     now_str,
                 ),
             )
+        touch_db_updated(conn)
         conn.commit()
     finally:
         conn.close()
+    sync_users_state_to_storage(upload_async=True)
     return {"success": True, "message": msg}
 
 
 @app.get("/api/pm/{pm_id}/evidence")
 def get_pm_evidence_file(pm_id: int):
     conn = get_db()
-    pm = conn.execute("SELECT * FROM pm_schedules WHERE id = ?", (pm_id,)).fetchone()
+    pm = conn.execute(
+        "SELECT p.*, e.equip_code FROM pm_schedules p LEFT JOIN equipment e ON p.equip_id = e.id WHERE p.id = ?",
+        (pm_id,),
+    ).fetchone()
     conn.close()
-    if not pm or not pm["evidence_local_path"] or not os.path.exists(pm["evidence_local_path"]):
+    if not pm:
+        raise HTTPException(status_code=404, detail="ไม่พบข้อมูลการทำ PM")
+    local_path = pm["evidence_local_path"]
+    if (not local_path or not os.path.exists(local_path)) and pm["evidence_synology_path"]:
+        eq_code = pm["equip_code"] or "EQUIP"
+        fallback_local = os.path.join(
+            STORAGE_DIR,
+            "ISO",
+            "MHE_Maintenance",
+            eq_code,
+            pm["evidence_file_name"] or f"{eq_code}_PM_Evidence.pdf",
+        )
+        syno = get_synology_client()
+        if syno.download_file_to_local(pm["evidence_synology_path"], fallback_local):
+            local_path = fallback_local
+    if not local_path or not os.path.exists(local_path):
         raise HTTPException(status_code=404, detail="ไม่พบไฟล์หลักฐานการทำ PM")
-    return FileResponse(pm["evidence_local_path"], filename=pm["evidence_file_name"])
+    return FileResponse(local_path, filename=pm["evidence_file_name"] or "PM_Evidence.pdf")
 
 
 @app.post("/api/pm/check-alerts")
@@ -1978,19 +2212,6 @@ def list_vendors(
     grade: str = Query(""),
 ):
     conn = get_db()
-    try:
-        cnt = conn.execute("SELECT COUNT(*) as c FROM vendors").fetchone()["c"]
-        if cnt == 0:
-            conn.close()
-            init_db()
-            bootstrap_sample_files_and_synology()
-            conn = get_db()
-    except Exception:
-        conn.close()
-        init_db()
-        bootstrap_sample_files_and_synology()
-        conn = get_db()
-
     sql = "SELECT * FROM vendors WHERE 1=1"
     params: List[Any] = []
     if q.strip():
@@ -2034,8 +2255,8 @@ def get_vendor_category_abbr(category: str) -> str:
 def generate_next_vendor_code(conn: sqlite3.Connection, category: str) -> str:
     abbr = get_vendor_category_abbr(category)
     prefix = f"AVL-{abbr}-"
+    max_num = _get_code_seq_highwater(conn, "seq_vendor_", prefix)
     rows = conn.execute("SELECT vendor_code FROM vendors WHERE vendor_code LIKE ?", (f"{prefix}%",)).fetchall()
-    max_num = 0
     for r in rows:
         code_str = r["vendor_code"] or ""
         m = re.match(rf"^{re.escape(prefix)}(\d+)$", code_str.strip().upper())
@@ -2172,9 +2393,13 @@ async def save_vendor(
             )
             target_id = cur.lastrowid
 
+        if "-" in clean_code:
+            _update_code_seq_highwater(conn, "seq_vendor_", clean_code.rsplit("-", 1)[0] + "-", clean_code)
+        touch_db_updated(conn)
         conn.commit()
     finally:
         conn.close()
+    sync_users_state_to_storage(upload_async=True)
     return {"success": True, "vendor_id": target_id, "message": msg}
 
 
@@ -2183,18 +2408,40 @@ def get_vendor_cert_file(vendor_id: int):
     conn = get_db()
     v = conn.execute("SELECT * FROM vendors WHERE id = ?", (vendor_id,)).fetchone()
     conn.close()
-    if not v or not v["local_cert_path"] or not os.path.exists(v["local_cert_path"]):
+    if not v:
+        raise HTTPException(status_code=404, detail="ไม่พบข้อมูลผู้จัดจำหน่าย")
+    local_path = v["local_cert_path"]
+    if (not local_path or not os.path.exists(local_path)) and v["synology_cert_path"]:
+        fallback_local = os.path.join(
+            STORAGE_DIR,
+            "ISO",
+            "AVL_Vendors",
+            v["vendor_code"],
+            v["cert_filename"] or f"{v['vendor_code']}_Certificate.pdf",
+        )
+        syno = get_synology_client()
+        if syno.download_file_to_local(v["synology_cert_path"], fallback_local):
+            local_path = fallback_local
+    if not local_path or not os.path.exists(local_path):
         raise HTTPException(status_code=404, detail="ไม่พบไฟล์เอกสารรับรองของผู้จัดจำหน่าย")
-    return FileResponse(v["local_cert_path"], filename=v["cert_filename"])
+    return FileResponse(local_path, filename=v["cert_filename"] or f"{v['vendor_code']}_Certificate.pdf")
 
 
 @app.delete("/api/vendors/{vendor_id}")
 def delete_vendor(vendor_id: int):
     conn = get_db()
-    conn.execute("DELETE FROM vendor_evaluations WHERE vendor_id = ?", (vendor_id,))
-    conn.execute("DELETE FROM vendors WHERE id = ?", (vendor_id,))
-    conn.commit()
-    conn.close()
+    try:
+        v_row = conn.execute("SELECT vendor_code FROM vendors WHERE id = ?", (vendor_id,)).fetchone()
+        if v_row and v_row["vendor_code"] and "-" in v_row["vendor_code"]:
+            vc = v_row["vendor_code"].strip().upper()
+            _update_code_seq_highwater(conn, "seq_vendor_", vc.rsplit("-", 1)[0] + "-", vc)
+        conn.execute("DELETE FROM vendor_evaluations WHERE vendor_id = ?", (vendor_id,))
+        conn.execute("DELETE FROM vendors WHERE id = ?", (vendor_id,))
+        touch_db_updated(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    sync_users_state_to_storage(upload_async=True)
     return {"success": True, "message": "ลบข้อมูลผู้จัดจำหน่ายเรียบร้อย"}
 
 
@@ -2243,8 +2490,8 @@ def generate_next_avl_eval_code(conn: sqlite3.Connection, year_str: str = "") ->
     if not re.match(r"^\d{4}$", yr):
         yr = str(datetime.now().year)
     prefix = f"AVL-EVAL-{yr}-"
+    max_num = _get_code_seq_highwater(conn, "seq_eval_", prefix)
     rows = conn.execute("SELECT eval_code FROM vendor_evaluations WHERE eval_code LIKE ?", (f"{prefix}%",)).fetchall()
-    max_num = 0
     for r in rows:
         code_str = r["eval_code"] or ""
         m = re.match(rf"^{re.escape(prefix)}(\d+)$", code_str.strip().upper())
@@ -2449,9 +2696,13 @@ async def save_avl_evaluation(
                 (planned_date, vendor_id),
             )
 
+        if "-" in clean_eval_code:
+            _update_code_seq_highwater(conn, "seq_eval_", clean_eval_code.rsplit("-", 1)[0] + "-", clean_eval_code)
+        touch_db_updated(conn)
         conn.commit()
     finally:
         conn.close()
+    sync_users_state_to_storage(upload_async=True)
     return {
         "success": True,
         "message": msg,
@@ -2464,19 +2715,46 @@ async def save_avl_evaluation(
 @app.get("/api/avl-evaluations/{eval_id}/evidence")
 def get_avl_evaluation_evidence(eval_id: int):
     conn = get_db()
-    ev = conn.execute("SELECT * FROM vendor_evaluations WHERE id = ?", (eval_id,)).fetchone()
+    ev = conn.execute(
+        "SELECT ve.*, v.vendor_code FROM vendor_evaluations ve LEFT JOIN vendors v ON ve.vendor_id = v.id WHERE ve.id = ?",
+        (eval_id,),
+    ).fetchone()
     conn.close()
-    if not ev or not ev["local_evidence_path"] or not os.path.exists(ev["local_evidence_path"]):
+    if not ev:
+        raise HTTPException(status_code=404, detail="ไม่พบข้อมูลการประเมินผู้จัดจำหน่าย")
+    local_path = ev["local_evidence_path"]
+    if (not local_path or not os.path.exists(local_path)) and ev["synology_evidence_path"]:
+        v_code = ev["vendor_code"] or "VENDOR"
+        fallback_local = os.path.join(
+            STORAGE_DIR,
+            "ISO",
+            "AVL_Vendors",
+            v_code,
+            "Evaluations",
+            ev["evidence_filename"] or f"{v_code}_EvalReport.pdf",
+        )
+        syno = get_synology_client()
+        if syno.download_file_to_local(ev["synology_evidence_path"], fallback_local):
+            local_path = fallback_local
+    if not local_path or not os.path.exists(local_path):
         raise HTTPException(status_code=404, detail="ไม่พบไฟล์หลักฐานการประเมินผู้จัดจำหน่าย")
-    return FileResponse(ev["local_evidence_path"], filename=ev["evidence_filename"])
+    return FileResponse(local_path, filename=ev["evidence_filename"] or "AVL_Evaluation_Evidence.pdf")
 
 
 @app.delete("/api/avl-evaluations/{eval_id}")
 def delete_avl_evaluation(eval_id: int):
     conn = get_db()
-    conn.execute("DELETE FROM vendor_evaluations WHERE id = ?", (eval_id,))
-    conn.commit()
-    conn.close()
+    try:
+        ev_row = conn.execute("SELECT eval_code FROM vendor_evaluations WHERE id = ?", (eval_id,)).fetchone()
+        if ev_row and ev_row["eval_code"] and "-" in ev_row["eval_code"]:
+            ec = ev_row["eval_code"].strip().upper()
+            _update_code_seq_highwater(conn, "seq_eval_", ec.rsplit("-", 1)[0] + "-", ec)
+        conn.execute("DELETE FROM vendor_evaluations WHERE id = ?", (eval_id,))
+        touch_db_updated(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    sync_users_state_to_storage(upload_async=True)
     return {"success": True}
 
 

@@ -755,9 +755,58 @@ function exportMasterFileCSV() {
     link.click();
 }
 
+function selectDocCategoryTab(cat) {
+    const sel = document.getElementById("docCategoryFilter");
+    if (sel) {
+        sel.value = cat;
+    }
+    syncDocCategoryPills();
+    loadDocuments();
+}
+
+function syncDocCategoryPills() {
+    const curCat = document.getElementById("docCategoryFilter")?.value || "";
+    const cats = ["", "QM", "PM", "WI", "FM", "SD", "EX"];
+    cats.forEach((c) => {
+        const btn = document.getElementById(`docCatTab-${c || "ALL"}`);
+        if (!btn) return;
+        if (c === curCat) {
+            btn.className = "doc-cat-pill px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 text-white shadow-sm transition";
+        } else {
+            btn.className = "doc-cat-pill px-3 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-700 border border-slate-200 hover:bg-blue-50 transition";
+        }
+    });
+}
+
 // =========================================================
 // 5. HR EMPLOYEE RECORDS, JOB APPLICATION & TRAINING
 // =========================================================
+let currentEmployeeViewMode = "list";
+
+function setEmployeeViewMode(mode) {
+    currentEmployeeViewMode = mode === "card" ? "card" : "list";
+    const listWrap = document.getElementById("employeesListViewContainer");
+    const cardWrap = document.getElementById("employeesGrid");
+    const btnList = document.getElementById("empViewBtnList");
+    const btnCard = document.getElementById("empViewBtnCard");
+
+    if (listWrap) listWrap.classList.toggle("hidden", currentEmployeeViewMode !== "list");
+    if (cardWrap) cardWrap.classList.toggle("hidden", currentEmployeeViewMode !== "card");
+
+    if (btnList) {
+        btnList.className =
+            currentEmployeeViewMode === "list"
+                ? "px-3 py-1.5 rounded-lg text-xs font-bold bg-indigo-600 text-white shadow-sm transition flex items-center gap-1.5"
+                : "px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 hover:bg-white transition flex items-center gap-1.5";
+    }
+    if (btnCard) {
+        btnCard.className =
+            currentEmployeeViewMode === "card"
+                ? "px-3 py-1.5 rounded-lg text-xs font-bold bg-indigo-600 text-white shadow-sm transition flex items-center gap-1.5"
+                : "px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 hover:bg-white transition flex items-center gap-1.5";
+    }
+}
+
 async function loadEmployees() {
     const q = document.getElementById("empSearchInput")?.value || "";
     const dept = document.getElementById("empDeptFilter")?.value || "";
@@ -765,56 +814,163 @@ async function loadEmployees() {
     const emps = await res.json();
     allEmployeesCache = emps;
 
+    const tbody = document.getElementById("employeesTableBody");
     const grid = document.getElementById("employeesGrid");
+
     if (!emps.length) {
-        grid.innerHTML = `<div class="col-span-full py-10 text-center text-slate-400">ไม่พบข้อมูลพนักงานตามคำค้นหา</div>`;
+        if (tbody) {
+            tbody.innerHTML = `<tr><td colspan="6" class="py-8 text-center text-slate-400">ไม่พบข้อมูลพนักงานตามคำค้นหา</td></tr>`;
+        }
+        if (grid) {
+            grid.innerHTML = `<div class="col-span-full py-10 text-center text-slate-400">ไม่พบข้อมูลพนักงานตามคำค้นหา</div>`;
+        }
         return;
     }
 
-    grid.innerHTML = emps
-        .map((e) => {
-            const hasAppFile = Boolean(e.application_file_name);
-            return `
-            <div class="bg-slate-50/70 hover:bg-white rounded-2xl p-4 border border-slate-200 hover:border-indigo-300 shadow-sm transition flex flex-col justify-between">
-                <div>
-                    <div class="flex items-start justify-between gap-2">
-                        <div>
-                            <span class="font-mono font-bold text-xs px-2.5 py-0.5 rounded bg-indigo-100 text-indigo-800">${e.emp_code}</span>
-                            <span class="text-xs px-2 py-0.5 rounded bg-slate-200 text-slate-700 ml-1">${e.department}</span>
+    if (tbody) {
+        tbody.innerHTML = emps
+            .map((e) => {
+                const hasAppFile = Boolean(e.application_file_name);
+                const appCell = hasAppFile
+                    ? `<a href="/api/employees/${e.id}/application-file" target="_blank" class="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-1 rounded-lg">
+                        <i class="fa-solid fa-file-pdf"></i> ${e.application_file_name}
+                       </a>`
+                    : `<span class="text-xs text-amber-600 font-medium"><i class="fa-solid fa-circle-exclamation"></i> รอแนบใบสมัครงาน</span>`;
+
+                const trainingsListHtml =
+                    e.trainings && e.trainings.length
+                        ? `<div class="space-y-1.5">
+                            ${e.trainings
+                                .map((t) => {
+                                    const stCls =
+                                        t.status === "Completed"
+                                            ? "bg-emerald-100 text-emerald-800"
+                                            : "bg-amber-100 text-amber-800";
+                                    const evBtn = t.evidence_file_name
+                                        ? `<a href="/api/trainings/${t.id}/evidence" target="_blank" class="text-[11px] text-indigo-700 hover:underline font-semibold ml-1"><i class="fa-solid fa-file-shield"></i> หลักฐาน (${t.evidence_file_name})</a>`
+                                        : `<span class="text-[11px] text-slate-400 ml-1">(รอแนบหลักฐาน)</span>`;
+                                    return `
+                                    <div class="text-xs bg-slate-50 p-1.5 rounded-lg border border-slate-200 flex flex-wrap items-center justify-between gap-1">
+                                        <div>
+                                            <span class="font-mono font-bold text-indigo-800">${t.course_code ? `[${t.course_code}]` : ""}</span>
+                                            <span class="font-semibold text-slate-800">${t.course_title}</span>
+                                            <span class="text-[11px] text-slate-500">(${t.planned_date}${t.actual_date ? ` / อบรมจริง: ${t.actual_date}` : ""})</span>
+                                            ${evBtn}
+                                        </div>
+                                        <span class="text-[10px] px-2 py-0.5 rounded font-bold ${stCls}">${t.status} (${t.evaluation_result || "-"})</span>
+                                    </div>
+                                    `;
+                                })
+                                .join("")}
+                           </div>`
+                        : `<span class="text-xs text-slate-400">ยังไม่มีประวัติหรือแผนการฝึกอบรม</span>`;
+
+                return `
+                <tr class="hover:bg-slate-50/80 transition">
+                    <td class="py-3.5 px-3 align-top">
+                        <span class="font-mono font-bold text-xs px-2.5 py-1 rounded-lg bg-indigo-50 text-indigo-800 border border-indigo-200">${e.emp_code}</span>
+                        <div class="mt-1.5">
+                            <span class="text-[11px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-semibold">${e.status || "Active"}</span>
                         </div>
-                        <button onclick="editEmployee(${e.id})" class="text-xs text-slate-400 hover:text-indigo-600" title="แก้ไขข้อมูลพนักงาน">
+                    </td>
+                    <td class="py-3.5 px-3 align-top">
+                        <div class="font-bold text-slate-900">${e.full_name}</div>
+                        <div class="text-xs text-slate-600">${e.position}</div>
+                        <div class="text-[11px] text-slate-400 mt-0.5">โทร: ${e.phone || "-"} | อีเมล: ${e.email || "-"}</div>
+                    </td>
+                    <td class="py-3.5 px-3 align-top text-xs">
+                        <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-800 font-semibold">${e.department}</span>
+                        <div class="text-slate-500 font-mono mt-1">เริ่มงาน: ${e.hire_date}</div>
+                    </td>
+                    <td class="py-3.5 px-3 align-top">
+                        ${appCell}
+                    </td>
+                    <td class="py-3.5 px-3 align-top">
+                        <div class="text-xs font-bold text-indigo-700 mb-1">
+                            อบรมแล้ว ${e.training_completed}/${e.training_total} หลักสูตร (ตามแผน ${e.training_planned} หลักสูตร)
+                        </div>
+                        ${trainingsListHtml}
+                    </td>
+                    <td class="py-3.5 px-3 align-top text-right whitespace-nowrap">
+                        <button onclick="openEmployeeDossier(${e.id})" class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-3 py-1.5 rounded-lg mr-1 shadow-sm" title="เปิดแฟ้มประวัติรายบุคคล & เพิ่มแผน/หลักฐานฝึกอบรม">
+                            <i class="fa-solid fa-folder-open"></i> แฟ้มประวัติ (5d)
+                        </button>
+                        <button onclick="editEmployee(${e.id})" class="bg-amber-50 hover:bg-amber-100 text-amber-700 text-xs px-2.5 py-1.5 rounded-lg mr-1" title="แก้ไขข้อมูลพนักงาน">
                             <i class="fa-solid fa-pen"></i>
                         </button>
-                    </div>
-                    <h4 class="text-base font-bold text-slate-900 mt-2">${e.full_name}</h4>
-                    <p class="text-xs text-slate-600">${e.position}</p>
-                    <p class="text-[11px] text-slate-400 mt-0.5">วันที่เริ่มงาน: ${e.hire_date} | โทร: ${e.phone || "-"}</p>
+                        <button onclick="deleteEmployee(${e.id})" class="bg-rose-50 hover:bg-rose-100 text-rose-600 text-xs px-2.5 py-1.5 rounded-lg" title="ลบข้อมูลพนักงาน">
+                            <i class="fa-solid fa-trash"></i>
+                        </button>
+                    </td>
+                </tr>
+                `;
+            })
+            .join("");
+    }
 
-                    <div class="mt-3 pt-3 border-t border-slate-200/80 grid grid-cols-2 gap-2 text-xs">
-                        <div class="bg-white p-2 rounded-lg border border-slate-200">
-                            <div class="text-[11px] text-slate-400">5a. ใบสมัครงาน</div>
-                            <div class="font-semibold mt-0.5 ${hasAppFile ? "text-emerald-600" : "text-amber-600"}">
-                                ${hasAppFile ? `<i class="fa-solid fa-file-circle-check"></i> แนบไฟล์แล้ว` : `<i class="fa-solid fa-circle-exclamation"></i> รอแนบไฟล์`}
+    if (grid) {
+        grid.innerHTML = emps
+            .map((e) => {
+                const hasAppFile = Boolean(e.application_file_name);
+                return `
+                <div class="bg-slate-50/70 hover:bg-white rounded-2xl p-4 border border-slate-200 hover:border-indigo-300 shadow-sm transition flex flex-col justify-between">
+                    <div>
+                        <div class="flex items-start justify-between gap-2">
+                            <div>
+                                <span class="font-mono font-bold text-xs px-2.5 py-0.5 rounded bg-indigo-100 text-indigo-800">${e.emp_code}</span>
+                                <span class="text-xs px-2 py-0.5 rounded bg-slate-200 text-slate-700 ml-1">${e.department}</span>
+                            </div>
+                            <div class="flex items-center gap-1">
+                                <button onclick="editEmployee(${e.id})" class="text-xs text-slate-400 hover:text-indigo-600 px-1" title="แก้ไขข้อมูลพนักงาน">
+                                    <i class="fa-solid fa-pen"></i>
+                                </button>
+                                <button onclick="deleteEmployee(${e.id})" class="text-xs text-slate-400 hover:text-rose-600 px-1" title="ลบพนักงาน">
+                                    <i class="fa-solid fa-trash"></i>
+                                </button>
                             </div>
                         </div>
-                        <div class="bg-white p-2 rounded-lg border border-slate-200">
-                            <div class="text-[11px] text-slate-400">5b,c. ประวัติฝึกอบรม</div>
-                            <div class="font-semibold text-indigo-700 mt-0.5">
-                                อบรมแล้ว ${e.training_completed}/${e.training_total} หลักสูตร
+                        <h4 class="text-base font-bold text-slate-900 mt-2">${e.full_name}</h4>
+                        <p class="text-xs text-slate-600">${e.position}</p>
+                        <p class="text-[11px] text-slate-400 mt-0.5">วันที่เริ่มงาน: ${e.hire_date} | โทร: ${e.phone || "-"}</p>
+
+                        <div class="mt-3 pt-3 border-t border-slate-200/80 grid grid-cols-2 gap-2 text-xs">
+                            <div class="bg-white p-2 rounded-lg border border-slate-200">
+                                <div class="text-[11px] text-slate-400">5a. ใบสมัครงาน</div>
+                                <div class="font-semibold mt-0.5 ${hasAppFile ? "text-emerald-600" : "text-amber-600"}">
+                                    ${hasAppFile ? `<i class="fa-solid fa-file-circle-check"></i> แนบไฟล์แล้ว` : `<i class="fa-solid fa-circle-exclamation"></i> รอแนบไฟล์`}
+                                </div>
+                            </div>
+                            <div class="bg-white p-2 rounded-lg border border-slate-200">
+                                <div class="text-[11px] text-slate-400">5b,c. ประวัติฝึกอบรม</div>
+                                <div class="font-semibold text-indigo-700 mt-0.5">
+                                    อบรมแล้ว ${e.training_completed}/${e.training_total} หลักสูตร
+                                </div>
                             </div>
                         </div>
                     </div>
-                </div>
 
-                <div class="mt-4 flex gap-2">
-                    <button onclick="openEmployeeDossier(${e.id})" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold py-2 px-3 rounded-xl transition flex items-center justify-center gap-1.5">
-                        <i class="fa-solid fa-folder-open"></i> เรียกดูแฟ้มประวัติรายบุคคล (5d)
-                    </button>
+                    <div class="mt-4 flex gap-2">
+                        <button onclick="openEmployeeDossier(${e.id})" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold py-2 px-3 rounded-xl transition flex items-center justify-center gap-1.5">
+                            <i class="fa-solid fa-folder-open"></i> เรียกดูแฟ้มประวัติรายบุคคล (5d)
+                        </button>
+                    </div>
                 </div>
-            </div>
-            `;
-        })
-        .join("");
+                `;
+            })
+            .join("");
+    }
+}
+
+async function deleteEmployee(empId) {
+    if (!confirm("ยืนยันการลบข้อมูลพนักงานและประวัติการฝึกอบรมของพนักงานรายนี้?")) return;
+    const res = await fetch(`/api/employees/${empId}`, { method: "DELETE", headers: apiHeaders() });
+    if (res.ok) {
+        await loadEmployees();
+        await loadDashboard();
+        showToast("ลบข้อมูลพนักงานเรียบร้อยแล้ว");
+    } else {
+        showToast("ไม่สามารถลบข้อมูลพนักงานได้", true);
+    }
 }
 
 function openEmployeeModal() {
@@ -1925,4 +2081,390 @@ async function triggerAvlAlertsNow(force = true) {
     await loadEquipmentAndPm();
     await loadDashboard();
     showToast(`ส่งอีเมลแจ้งเตือนแผนประเมินผู้จัดจำหน่าย (AVL) ล่วงหน้า 30 วันจำนวน ${data.triggered_count} รายการเรียบร้อย`);
+}
+
+// =========================================================
+// 9. PRINTABLE LIST VIEW (DOCUMENTS BY CATEGORY, EMPLOYEES, AVL)
+// =========================================================
+let currentPrintListViewModule = "documents";
+
+const DOC_CATEGORY_LABELS = {
+    QM: "QM = คู่มือคุณภาพ (Quality Manual)",
+    PM: "PM = ระเบียบปฏิบัติงาน (Procedure Manual)",
+    WI: "WI = วิธีปฏิบัติงาน (Work Instruction)",
+    FM: "FM = แบบฟอร์ม (Form)",
+    SD: "SD = เอกสารสนับสนุน (Support Document)",
+    EX: "EX = เอกสารภายนอก (External Document)",
+};
+
+async function openPrintListViewModal(moduleName = "documents") {
+    try {
+        // Ensure latest data is loaded from API for all 3 modules
+        const [dRes, eRes, vRes, evRes] = await Promise.all([
+            fetch("/api/documents", { headers: apiHeaders() }),
+            fetch("/api/employees", { headers: apiHeaders() }),
+            fetch("/api/vendors", { headers: apiHeaders() }),
+            fetch("/api/avl-evaluations", { headers: apiHeaders() }),
+        ]);
+        if (dRes.ok) allDocumentsCache = await dRes.json();
+        if (eRes.ok) allEmployeesCache = await eRes.json();
+        if (vRes.ok) allVendorsCache = await vRes.json();
+        if (evRes.ok) allAvlEvalsCache = await evRes.json();
+    } catch (e) {}
+
+    openModal("printListViewModal");
+    switchPrintListViewModule(moduleName);
+}
+
+function closePrintListViewModal() {
+    document.body.classList.remove("printing-list-modal");
+    closeModal("printListViewModal");
+}
+
+function switchPrintListViewModule(moduleName) {
+    currentPrintListViewModule = moduleName || "documents";
+    const modules = ["documents", "employees", "avl"];
+    modules.forEach((m) => {
+        const btn = document.getElementById(`plvTab-${m}`);
+        if (!btn) return;
+        if (m === currentPrintListViewModule) {
+            btn.className = "px-3.5 py-2 rounded-lg text-xs font-bold bg-blue-600 text-white shadow-sm transition flex items-center gap-1.5";
+        } else {
+            btn.className = "px-3.5 py-2 rounded-lg text-xs font-bold bg-white text-slate-700 hover:bg-slate-50 transition flex items-center gap-1.5";
+        }
+    });
+
+    const subSel = document.getElementById("plvSubFilterSelect");
+    if (subSel) {
+        if (currentPrintListViewModule === "documents") {
+            const activeDocCat = document.getElementById("docCategoryFilter")?.value || "";
+            subSel.innerHTML = `
+                <option value="">ทุกประเภทเอกสาร (แสดงแยกกลุ่มตามหมวดหมู่ QM, PM, WI, FM, SD, EX)</option>
+                <option value="QM">QM = คู่มือคุณภาพ (Quality Manual)</option>
+                <option value="PM">PM = ระเบียบปฏิบัติงาน (Procedure Manual)</option>
+                <option value="WI">WI = วิธีปฏิบัติงาน (Work Instruction)</option>
+                <option value="FM">FM = แบบฟอร์ม (Form)</option>
+                <option value="SD">SD = เอกสารสนับสนุน (Support Document)</option>
+                <option value="EX">EX = เอกสารภายนอก (External Document)</option>
+            `;
+            subSel.value = activeDocCat;
+        } else if (currentPrintListViewModule === "employees") {
+            const activeDept = document.getElementById("empDeptFilter")?.value || "";
+            subSel.innerHTML = `
+                <option value="">ทุกแผนก (แสดงประวัติพนักงาน + แผนและหลักฐานการฝึกอบรม)</option>
+                <option value="Warehouse">Warehouse (คลังสินค้า)</option>
+                <option value="QMR/ISO">QMR/ISO (ควบคุมเอกสาร)</option>
+                <option value="HR">HR (ทรัพยากรบุคคล)</option>
+                <option value="Management">Management (บริหาร)</option>
+                <option value="Operations">Operations (ปฏิบัติการ)</option>
+            `;
+            subSel.value = activeDept;
+        } else if (currentPrintListViewModule === "avl") {
+            const activeAvlCat = document.getElementById("avlCategoryFilter")?.value || "";
+            subSel.innerHTML = `
+                <option value="">ทุกหมวดหมู่ผู้จัดจำหน่าย (แสดงทะเบียน AVL + ผลประเมิน ข้อ 3.2 & แผน ข้อ 3.3)</option>
+                <option value="MHE & Storage Systems">MHE & Storage Systems (MHE)</option>
+                <option value="Fire Protection Systems">Fire Protection Systems (FPS)</option>
+                <option value="Others">Others (OTH)</option>
+            `;
+            subSel.value = activeAvlCat;
+        }
+    }
+
+    renderPrintListViewContent();
+}
+
+function renderPrintListViewContent() {
+    const container = document.getElementById("printListViewContent");
+    if (!container) return;
+    const subFilter = document.getElementById("plvSubFilterSelect")?.value || "";
+    const nowStr = new Date().toLocaleString("th-TH");
+    const printedBy = currentUser ? `${currentUser.full_name} (@${currentUser.username})` : "System User";
+
+    if (currentPrintListViewModule === "documents") {
+        const docs = (allDocumentsCache || []).filter((d) => !subFilter || d.category === subFilter);
+        const catOrder = subFilter ? [subFilter] : ["QM", "PM", "WI", "FM", "SD", "EX"];
+
+        let sectionsHtml = "";
+        catOrder.forEach((cat) => {
+            const catDocs = docs.filter((d) => (d.category === "QP" ? "PM" : d.category) === cat);
+            if (!catDocs.length && !subFilter) return;
+
+            const rowsHtml = catDocs.length
+                ? catDocs
+                      .map(
+                          (d, idx) => `
+                    <tr class="border-b border-slate-300 text-xs">
+                        <td class="py-2 px-2.5 text-center border border-slate-300">${idx + 1}</td>
+                        <td class="py-2 px-2.5 font-mono font-bold text-blue-900 border border-slate-300">${d.doc_code}</td>
+                        <td class="py-2 px-2.5 font-semibold text-slate-900 border border-slate-300">
+                            ${d.doc_title}
+                            ${d.notes ? `<div class="text-[11px] font-normal text-slate-500">${d.notes}</div>` : ""}
+                        </td>
+                        <td class="py-2 px-2.5 text-center font-mono border border-slate-300">${d.category}</td>
+                        <td class="py-2 px-2.5 text-center font-mono border border-slate-300">${d.effective_date || "-"}</td>
+                        <td class="py-2 px-2.5 text-center font-mono font-bold border border-slate-300">Rev.${String(d.revision_no || 0).padStart(2, "0")}</td>
+                        <td class="py-2 px-2.5 text-center font-mono border border-slate-300">${d.revision_date || "-"}</td>
+                        <td class="py-2 px-2.5 text-center font-semibold border border-slate-300">${d.status}</td>
+                        <td class="py-2 px-2.5 text-[11px] border border-slate-300">${(d.allowed_departments || []).join(", ")}</td>
+                        <td class="py-2 px-2.5 font-mono text-[11px] border border-slate-300">${d.file_name || d.doc_code + ".pdf"}</td>
+                    </tr>
+                `
+                      )
+                      .join("")
+                : `<tr><td colspan="10" class="py-4 text-center text-slate-400 border border-slate-300">ไม่มีเอกสารในหมวดหมู่นี้</td></tr>`;
+
+            sectionsHtml += `
+                <div class="space-y-2 mb-6">
+                    <div class="bg-slate-800 text-white px-3.5 py-2 rounded-lg flex items-center justify-between text-xs font-bold">
+                        <span>หมวดหมู่เอกสาร: ${DOC_CATEGORY_LABELS[cat] || cat}</span>
+                        <span>จำนวน ${catDocs.length} ฉบับ</span>
+                    </div>
+                    <table class="w-full text-left border-collapse border border-slate-300">
+                        <thead>
+                            <tr class="bg-slate-100 text-slate-800 text-[11px] uppercase">
+                                <th class="py-2 px-2.5 border border-slate-300 text-center w-10">#</th>
+                                <th class="py-2 px-2.5 border border-slate-300">หมายเลขเอกสาร</th>
+                                <th class="py-2 px-2.5 border border-slate-300">ชื่อเอกสาร (Document Title)</th>
+                                <th class="py-2 px-2.5 border border-slate-300 text-center">หมวด</th>
+                                <th class="py-2 px-2.5 border border-slate-300 text-center">วันที่เริ่มใช้</th>
+                                <th class="py-2 px-2.5 border border-slate-300 text-center">ครั้งที่แก้ไข</th>
+                                <th class="py-2 px-2.5 border border-slate-300 text-center">วันที่แก้ไข</th>
+                                <th class="py-2 px-2.5 border border-slate-300 text-center">สถานะ</th>
+                                <th class="py-2 px-2.5 border border-slate-300">แผนกที่เข้าถึง</th>
+                                <th class="py-2 px-2.5 border border-slate-300">ชื่อไฟล์อ้างอิง</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rowsHtml}</tbody>
+                    </table>
+                </div>
+            `;
+        });
+
+        container.innerHTML = `
+            <div class="border-b-2 border-slate-800 pb-3 mb-4 flex flex-wrap items-start justify-between gap-4">
+                <div>
+                    <div class="text-xs font-bold uppercase tracking-wider text-blue-800">SUNLOGIS ISO 9001 DOCUMENT CONTROL SYSTEM</div>
+                    <h2 class="text-lg font-extrabold text-slate-900 mt-0.5">บัญชีแม่บทเอกสารแยกตามประเภทเอกสาร (ISO Master File List View)</h2>
+                    <div class="text-xs text-slate-600 mt-0.5">หมวดหมู่ที่แสดง: <strong>${subFilter ? DOC_CATEGORY_LABELS[subFilter] : "ทุกหมวดหมู่เอกสาร (All Categories)"}</strong> | รวมทั้งหมด: <strong>${docs.length} ฉบับ</strong></div>
+                </div>
+                <div class="text-right text-xs text-slate-600">
+                    <div>วันที่พิมพ์: <strong>${nowStr}</strong></div>
+                    <div>ผู้สั่งพิมพ์: <strong>${printedBy}</strong></div>
+                </div>
+            </div>
+            ${sectionsHtml || `<div class="py-8 text-center text-slate-400">ไม่พบข้อมูลเอกสาร</div>`}
+        `;
+    } else if (currentPrintListViewModule === "employees") {
+        const emps = (allEmployeesCache || []).filter((e) => !subFilter || e.department === subFilter);
+        const empRowsHtml = emps.length
+            ? emps
+                  .map((e, idx) => {
+                      const trSummary =
+                          e.trainings && e.trainings.length
+                              ? e.trainings
+                                    .map(
+                                        (t) =>
+                                            `<div class="mb-1">• <strong>${t.course_code ? `[${t.course_code}] ` : ""}${t.course_title}</strong> (${t.training_type}) | แผน: ${t.planned_date}${t.actual_date ? ` / จริง: ${t.actual_date}` : ""} | สถานะ: <strong>${t.status}</strong> | ผลประเมิน: <strong>${t.evaluation_result || "-"} ${t.score ? `(${t.score})` : ""}</strong> | หลักฐาน: ${t.evidence_file_name || "รอแนบ"}</div>`
+                                    )
+                                    .join("")
+                              : `<span class="text-slate-400">ยังไม่มีรายการฝึกอบรม</span>`;
+
+                      return `
+                    <tr class="border-b border-slate-300 text-xs">
+                        <td class="py-2 px-2.5 text-center border border-slate-300 align-top">${idx + 1}</td>
+                        <td class="py-2 px-2.5 font-mono font-bold text-indigo-900 border border-slate-300 align-top">${e.emp_code}</td>
+                        <td class="py-2 px-2.5 border border-slate-300 align-top">
+                            <div class="font-bold text-slate-900">${e.full_name}</div>
+                            <div class="text-[11px] text-slate-600">${e.position}</div>
+                        </td>
+                        <td class="py-2 px-2.5 text-center border border-slate-300 align-top">${e.department}</td>
+                        <td class="py-2 px-2.5 text-center font-mono border border-slate-300 align-top">${e.hire_date || "-"}</td>
+                        <td class="py-2 px-2.5 border border-slate-300 align-top text-[11px]">
+                            <div>โทร: ${e.phone || "-"}</div>
+                            <div>อีเมล: ${e.email || "-"}</div>
+                        </td>
+                        <td class="py-2 px-2.5 border border-slate-300 align-top text-[11px] font-mono">
+                            ${e.application_file_name ? `✓ ${e.application_file_name}` : "รอแนบไฟล์"}
+                        </td>
+                        <td class="py-2 px-2.5 border border-slate-300 align-top text-[11px]">
+                            <div class="font-bold text-indigo-800 mb-1">อบรมแล้ว ${e.training_completed}/${e.training_total} หลักสูตร:</div>
+                            ${trSummary}
+                        </td>
+                    </tr>
+                `;
+                  })
+                  .join("")
+            : `<tr><td colspan="8" class="py-6 text-center text-slate-400 border border-slate-300">ไม่พบข้อมูลพนักงาน</td></tr>`;
+
+        container.innerHTML = `
+            <div class="border-b-2 border-slate-800 pb-3 mb-4 flex flex-wrap items-start justify-between gap-4">
+                <div>
+                    <div class="text-xs font-bold uppercase tracking-wider text-indigo-800">SUNLOGIS ISO 9001 HR & COMPETENCY TRAINING RECORD</div>
+                    <h2 class="text-lg font-extrabold text-slate-900 mt-0.5">ทะเบียนประวัติพนักงาน แผนการฝึกอบรม และหลักฐานการฝึกอบรม (Employee & Training List View)</h2>
+                    <div class="text-xs text-slate-600 mt-0.5">แผนกที่แสดง: <strong>${subFilter || "ทุกแผนก (All Departments)"}</strong> | จำนวนพนักงานทั้งหมด: <strong>${emps.length} คน</strong></div>
+                </div>
+                <div class="text-right text-xs text-slate-600">
+                    <div>วันที่พิมพ์: <strong>${nowStr}</strong></div>
+                    <div>ผู้สั่งพิมพ์: <strong>${printedBy}</strong></div>
+                </div>
+            </div>
+            <table class="w-full text-left border-collapse border border-slate-300">
+                <thead>
+                    <tr class="bg-slate-100 text-slate-800 text-[11px] uppercase">
+                        <th class="py-2 px-2.5 border border-slate-300 text-center w-10">#</th>
+                        <th class="py-2 px-2.5 border border-slate-300">รหัสพนักงาน</th>
+                        <th class="py-2 px-2.5 border border-slate-300">ชื่อ-นามสกุล / ตำแหน่ง</th>
+                        <th class="py-2 px-2.5 border border-slate-300 text-center">แผนก</th>
+                        <th class="py-2 px-2.5 border border-slate-300 text-center">วันที่เริ่มงาน</th>
+                        <th class="py-2 px-2.5 border border-slate-300">ข้อมูลติดต่อ</th>
+                        <th class="py-2 px-2.5 border border-slate-300">5a. ใบสมัครงาน</th>
+                        <th class="py-2 px-2.5 border border-slate-300">5b, 5c. แผนการฝึกอบรม & ประวัติ/หลักฐานการฝึกอบรม</th>
+                    </tr>
+                </thead>
+                <tbody>${empRowsHtml}</tbody>
+            </table>
+        `;
+    } else if (currentPrintListViewModule === "avl") {
+        const vendors = (allVendorsCache || []).filter((v) => !subFilter || v.category === subFilter);
+        const evals = (allAvlEvalsCache || []).filter((ev) => !subFilter || ev.category === subFilter);
+
+        const vendorRowsHtml = vendors.length
+            ? vendors
+                  .map(
+                      (v, idx) => `
+                <tr class="border-b border-slate-300 text-xs">
+                    <td class="py-2 px-2.5 text-center border border-slate-300 align-top">${idx + 1}</td>
+                    <td class="py-2 px-2.5 font-mono font-bold text-teal-900 border border-slate-300 align-top">${v.vendor_code}</td>
+                    <td class="py-2 px-2.5 border border-slate-300 align-top">
+                        <div class="font-bold text-slate-900">${v.vendor_name}</div>
+                        <div class="text-[11px] text-slate-500">${v.address || ""} ${v.tax_id ? `| Tax ID: ${v.tax_id}` : ""}</div>
+                    </td>
+                    <td class="py-2 px-2.5 border border-slate-300 align-top">
+                        <div class="font-semibold">${v.category}</div>
+                        <div class="text-[11px] text-slate-600">${v.products_services || "-"}</div>
+                    </td>
+                    <td class="py-2 px-2.5 border border-slate-300 align-top text-[11px]">
+                        <div class="font-semibold">${v.contact_person || "-"}</div>
+                        <div>${v.phone || ""} ${v.email ? `| ${v.email}` : ""}</div>
+                        <div class="text-indigo-800">${v.iso_certified || ""}</div>
+                    </td>
+                    <td class="py-2 px-2.5 text-center font-bold border border-slate-300 align-top">${v.avl_status}</td>
+                    <td class="py-2 px-2.5 text-center font-bold border border-slate-300 align-top">
+                        ${v.latest_grade && v.latest_grade !== "-" ? `เกรด ${v.latest_grade} (${v.latest_score}%)` : "รอประเมิน"}
+                        ${v.last_eval_date ? `<div class="text-[10px] font-normal text-slate-500">ล่าสุด: ${v.last_eval_date}</div>` : ""}
+                    </td>
+                    <td class="py-2 px-2.5 border border-slate-300 align-top text-[11px]">
+                        <div>${v.latest_review_action || "-"}</div>
+                        ${v.next_eval_date ? `<div class="font-bold text-rose-700 mt-0.5">รอบถัดไป: ${v.next_eval_date}</div>` : ""}
+                    </td>
+                </tr>
+            `
+                  )
+                  .join("")
+            : `<tr><td colspan="8" class="py-6 text-center text-slate-400 border border-slate-300">ไม่พบข้อมูลผู้จัดจำหน่ายในทะเบียน AVL</td></tr>`;
+
+        const evalRowsHtml = evals.length
+            ? evals
+                  .map(
+                      (ev, idx) => `
+                <tr class="border-b border-slate-300 text-xs">
+                    <td class="py-2 px-2.5 text-center border border-slate-300 align-top">${idx + 1}</td>
+                    <td class="py-2 px-2.5 font-mono font-bold border border-slate-300 align-top">
+                        ${ev.eval_code}
+                        <div class="text-[11px] font-normal text-slate-600">${ev.eval_period} (${ev.frequency})</div>
+                    </td>
+                    <td class="py-2 px-2.5 border border-slate-300 align-top">
+                        <div class="font-mono font-bold text-teal-900">${ev.vendor_code}</div>
+                        <div class="font-semibold">${ev.vendor_name}</div>
+                    </td>
+                    <td class="py-2 px-2.5 text-center font-mono border border-slate-300 align-top">
+                        <div>แผน: ${ev.planned_date}</div>
+                        ${ev.actual_date ? `<div class="text-[11px] text-emerald-800">จริง: ${ev.actual_date}</div>` : ""}
+                        <div class="text-[11px] font-bold">${ev.status}</div>
+                    </td>
+                    <td class="py-2 px-2.5 text-center border border-slate-300 align-top text-[11px]">
+                        ${
+                            ev.status === "Completed" || ev.total_score > 0
+                                ? `1.คุณภาพ: <strong>${ev.score_quality}/35</strong> | 2.SLA: <strong>${ev.score_service_sla}/30</strong><br/>3.ต้นทุน: <strong>${ev.score_cost}/20</strong> | 4.เอกสาร: <strong>${ev.score_cooperation}/15</strong>`
+                                : "รอการบันทึกคะแนน"
+                        }
+                    </td>
+                    <td class="py-2 px-2.5 text-center font-bold border border-slate-300 align-top">
+                        ${ev.grade && ev.grade !== "-" ? `เกรด ${ev.grade} (${ev.total_score}%)` : "-"}
+                    </td>
+                    <td class="py-2 px-2.5 border border-slate-300 align-top text-[11px]">
+                        <div>${ev.review_action || "-"}</div>
+                        ${ev.car_no ? `<div class="font-bold text-amber-800">CAR: ${ev.car_no} (ครบกำหนด: ${ev.car_due_date || "-"})</div>` : ""}
+                        ${ev.evidence_filename ? `<div class="font-mono text-teal-800">ไฟล์: ${ev.evidence_filename}</div>` : ""}
+                    </td>
+                </tr>
+            `
+                  )
+                  .join("")
+            : `<tr><td colspan="7" class="py-6 text-center text-slate-400 border border-slate-300">ไม่พบประวัติหรือแผนการประเมิน</td></tr>`;
+
+        container.innerHTML = `
+            <div class="border-b-2 border-slate-800 pb-3 mb-4 flex flex-wrap items-start justify-between gap-4">
+                <div>
+                    <div class="text-xs font-bold uppercase tracking-wider text-teal-800">SUNLOGIS ISO 9001 APPROVED VENDOR LIST (AVL) & SUPPLIER EVALUATION</div>
+                    <h2 class="text-lg font-extrabold text-slate-900 mt-0.5">ทะเบียนผู้จัดจำหน่ายที่ผ่านการอนุมัติ และผลการประเมินตามคู่มือ ข้อ 3.2 & 3.3 (AVL List View)</h2>
+                    <div class="text-xs text-slate-600 mt-0.5">หมวดหมู่ที่แสดง: <strong>${subFilter || "ทุกหมวดหมู่ (MHE, FPS, OTH)"}</strong> | ผู้จัดจำหน่าย: <strong>${vendors.length} ราย</strong> | แผน/ผลประเมิน: <strong>${evals.length} รายการ</strong></div>
+                </div>
+                <div class="text-right text-xs text-slate-600">
+                    <div>วันที่พิมพ์: <strong>${nowStr}</strong></div>
+                    <div>ผู้สั่งพิมพ์: <strong>${printedBy}</strong></div>
+                </div>
+            </div>
+
+            <div class="space-y-2 mb-6">
+                <div class="bg-teal-900 text-white px-3.5 py-2 rounded-lg text-xs font-bold">
+                    ส่วนที่ 1: ทะเบียนข้อมูลผู้จัดจำหน่ายแต่ละราย (Approved Vendor List – AVL Registry)
+                </div>
+                <table class="w-full text-left border-collapse border border-slate-300">
+                    <thead>
+                        <tr class="bg-slate-100 text-slate-800 text-[11px] uppercase">
+                            <th class="py-2 px-2.5 border border-slate-300 text-center w-10">#</th>
+                            <th class="py-2 px-2.5 border border-slate-300">รหัสผู้จัดจำหน่าย</th>
+                            <th class="py-2 px-2.5 border border-slate-300">ชื่อบริษัท / ที่อยู่ / เลขผู้เสียภาษี</th>
+                            <th class="py-2 px-2.5 border border-slate-300">หมวดหมู่ / สินค้าและบริการ</th>
+                            <th class="py-2 px-2.5 border border-slate-300">ผู้ติดต่อ / มาตรฐานรับรอง</th>
+                            <th class="py-2 px-2.5 border border-slate-300 text-center">สถานะ AVL</th>
+                            <th class="py-2 px-2.5 border border-slate-300 text-center">ผลประเมินล่าสุด</th>
+                            <th class="py-2 px-2.5 border border-slate-300">การทบทวนตามข้อ 3.3 & รอบถัดไป</th>
+                        </tr>
+                    </thead>
+                    <tbody>${vendorRowsHtml}</tbody>
+                </table>
+            </div>
+
+            <div class="space-y-2">
+                <div class="bg-slate-800 text-white px-3.5 py-2 rounded-lg text-xs font-bold">
+                    ส่วนที่ 2: ตารางผลการประเมินตามเกณฑ์ ข้อ 3.2 และแผนการประเมิน ข้อ 3.3 (แจ้งเตือนล่วงหน้า 30 วัน)
+                </div>
+                <table class="w-full text-left border-collapse border border-slate-300">
+                    <thead>
+                        <tr class="bg-slate-100 text-slate-800 text-[11px] uppercase">
+                            <th class="py-2 px-2.5 border border-slate-300 text-center w-10">#</th>
+                            <th class="py-2 px-2.5 border border-slate-300">รหัสการประเมิน / รอบ</th>
+                            <th class="py-2 px-2.5 border border-slate-300">ผู้จัดจำหน่าย (Vendor)</th>
+                            <th class="py-2 px-2.5 border border-slate-300 text-center">วันที่ตามแผน / วันที่ประเมินจริง</th>
+                            <th class="py-2 px-2.5 border border-slate-300 text-center">คะแนนประเมิน ข้อ 3.2 (35/30/20/15)</th>
+                            <th class="py-2 px-2.5 border border-slate-300 text-center">คะแนนรวม / เกรด</th>
+                            <th class="py-2 px-2.5 border border-slate-300">การดำเนินการตาม ข้อ 3.3 & หลักฐาน</th>
+                        </tr>
+                    </thead>
+                    <tbody>${evalRowsHtml}</tbody>
+                </table>
+            </div>
+        `;
+    }
+}
+
+function triggerPrintListView() {
+    document.body.classList.add("printing-list-modal");
+    window.print();
+    setTimeout(() => {
+        document.body.classList.remove("printing-list-modal");
+    }, 500);
 }

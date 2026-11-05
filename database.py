@@ -402,9 +402,12 @@ def init_db() -> None:
             )
         cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('users_initialized', '1')")
 
-    # Seed sample Master List ISO Documents if empty
+    db_seeded_row = cur.execute("SELECT value FROM settings WHERE key = 'db_seeded'").fetchone()
+    db_already_seeded = bool(db_seeded_row and db_seeded_row["value"] == "1")
+
+    # Seed sample Master List ISO Documents ONLY if db has never been seeded
     cur.execute("SELECT COUNT(*) as cnt FROM documents")
-    if cur.fetchone()["cnt"] == 0:
+    if not db_already_seeded and cur.fetchone()["cnt"] == 0:
         sample_docs = [
             (
                 "QM-MR-001",
@@ -499,9 +502,9 @@ def init_db() -> None:
                 (doc_id, code, rev_no, eff_date, rev_date, f"ประกาศใช้เอกสาร (Rev.{rev_no:02d})", now_str),
             )
 
-    # Seed sample Employees & Training Records if empty
+    # Seed sample Employees & Training Records ONLY if db has never been seeded
     cur.execute("SELECT COUNT(*) as cnt FROM employees")
-    if cur.fetchone()["cnt"] == 0:
+    if not db_already_seeded and cur.fetchone()["cnt"] == 0:
         sample_emps = [
             ("EMP-001", "สมชาย สายชล (Somchai Saichon)", "Warehouse", "หัวหน้าคลังสินค้า (Warehouse Supervisor)", "2023-05-15", "somchai@sunlogis.com", "081-234-5678", "Active", "มีใบอนุญาตขับขี่รถโฟร์คลิฟท์ระดับมาตรฐาน"),
             ("EMP-002", "วิภาวดี ศรีสวัสดิ์ (Wipawadee Srisawat)", "QMR/ISO", "เจ้าหน้าที่ควบคุมเอกสาร (Document Controller)", "2024-02-01", "wipawadee@sunlogis.com", "089-876-5432", "Active", "ผู้รับผิดชอบดูแลระบบ ISO 9001:2015"),
@@ -536,9 +539,9 @@ def init_db() -> None:
                 (emp_id, ccode, ctitle, ttype, pdate, adate, hrs, trainer, st, res, score, rem, now_str),
             )
 
-    # Seed sample Equipment (MHE, Rack, etc.) & PM Schedules if empty
+    # Seed sample Equipment (MHE, Rack, etc.) & PM Schedules ONLY if db has never been seeded
     cur.execute("SELECT COUNT(*) as cnt FROM equipment")
-    if cur.fetchone()["cnt"] == 0:
+    if not db_already_seeded and cur.fetchone()["cnt"] == 0:
         sample_equip = [
             (
                 "MHE-FL-001",
@@ -701,9 +704,9 @@ def init_db() -> None:
                 (eq_id, pm_code, pm_title, freq, pdate, ndays, nemails, nsent, nsent_at, st, adate, perf_by, res_sum, cost, now_str),
             )
 
-    # Ensure sample External Document (EX) exists in documents
+    # Ensure sample External Document (EX) exists in documents ONLY if db has never been seeded
     cur.execute("SELECT COUNT(*) as cnt FROM documents WHERE category = 'EX'")
-    if cur.fetchone()["cnt"] == 0:
+    if not db_already_seeded and cur.fetchone()["cnt"] == 0:
         ex_docs = [
             (
                 "EX-WH-001",
@@ -746,9 +749,9 @@ def init_db() -> None:
                 (code, title, cat, eff_date, rev_no, rev_date, status, conf, roles, depts, users_list, notes, now_str),
             )
 
-    # Seed sample Approved Vendor List (AVL) & Supplier Evaluations if empty
+    # Seed sample Approved Vendor List (AVL) & Supplier Evaluations ONLY if db has never been seeded
     cur.execute("SELECT COUNT(*) as cnt FROM vendors")
-    if cur.fetchone()["cnt"] == 0:
+    if not db_already_seeded and cur.fetchone()["cnt"] == 0:
         due_20 = (today + timedelta(days=20)).strftime("%Y-%m-%d")
         due_28 = (today + timedelta(days=28)).strftime("%Y-%m-%d")
         due_75 = (today + timedelta(days=75)).strftime("%Y-%m-%d")
@@ -974,40 +977,42 @@ def init_db() -> None:
                 ),
             )
 
-    # Migrate existing QP -> PM and standardize sample codes to {CAT}-{DEPT}-{NNN} and AVL-EVAL-{YYYY}-{NNN}
-    cur.execute("UPDATE documents SET category = 'PM' WHERE category = 'QP'")
-    doc_code_migrations = [
-        ("QP-DCC-001", "PM-DC-001", "PM"),
-        ("QP-HR-002", "PM-HR-001", "PM"),
-        ("QM-ISO-001", "QM-MR-001", "QM"),
-        ("WI-MHE-001", "WI-WH-001", "WI"),
-        ("FM-HR-005", "FM-HR-001", "FM"),
-        ("EX-NFPA-025", "EX-WH-001", "EX"),
-        ("QM-AVL-001", "QM-MR-002", "QM"),
-    ]
-    for old_c, new_c, new_cat in doc_code_migrations:
-        cur.execute(
-            "UPDATE OR IGNORE documents SET doc_code = ?, category = ? WHERE doc_code = ?",
-            (new_c, new_cat, old_c),
-        )
-        cur.execute(
-            "UPDATE document_revisions SET doc_code = ? WHERE doc_code = ?",
-            (new_c, old_c),
-        )
+    if not db_already_seeded:
+        # Migrate existing QP -> PM and standardize sample codes to {CAT}-{DEPT}-{NNN} and AVL-EVAL-{YYYY}-{NNN}
+        cur.execute("UPDATE documents SET category = 'PM' WHERE category = 'QP'")
+        doc_code_migrations = [
+            ("QP-DCC-001", "PM-DC-001", "PM"),
+            ("QP-HR-002", "PM-HR-001", "PM"),
+            ("QM-ISO-001", "QM-MR-001", "QM"),
+            ("WI-MHE-001", "WI-WH-001", "WI"),
+            ("FM-HR-005", "FM-HR-001", "FM"),
+            ("EX-NFPA-025", "EX-WH-001", "EX"),
+            ("QM-AVL-001", "QM-MR-002", "QM"),
+        ]
+        for old_c, new_c, new_cat in doc_code_migrations:
+            cur.execute(
+                "UPDATE OR IGNORE documents SET doc_code = ?, category = ? WHERE doc_code = ?",
+                (new_c, new_cat, old_c),
+            )
+            cur.execute(
+                "UPDATE document_revisions SET doc_code = ? WHERE doc_code = ?",
+                (new_c, old_c),
+            )
 
-    cur.execute("UPDATE vendors SET category = 'Others' WHERE category = 'Other'")
-    eval_code_migrations = [
-        ("AVL-EVAL-2026-Q3-01", "AVL-EVAL-2026-001"),
-        ("AVL-EVAL-2026-Q3-02", "AVL-EVAL-2026-002"),
-        ("AVL-EVAL-2026-Q3-03", "AVL-EVAL-2026-003"),
-        ("AVL-EVAL-2026-Q4-01", "AVL-EVAL-2026-004"),
-        ("AVL-EVAL-2026-Q4-02", "AVL-EVAL-2026-005"),
-    ]
-    for old_ec, new_ec in eval_code_migrations:
-        cur.execute(
-            "UPDATE OR IGNORE vendor_evaluations SET eval_code = ? WHERE eval_code = ?",
-            (new_ec, old_ec),
-        )
+        cur.execute("UPDATE vendors SET category = 'Others' WHERE category = 'Other'")
+        eval_code_migrations = [
+            ("AVL-EVAL-2026-Q3-01", "AVL-EVAL-2026-001"),
+            ("AVL-EVAL-2026-Q3-02", "AVL-EVAL-2026-002"),
+            ("AVL-EVAL-2026-Q3-03", "AVL-EVAL-2026-003"),
+            ("AVL-EVAL-2026-Q4-01", "AVL-EVAL-2026-004"),
+            ("AVL-EVAL-2026-Q4-02", "AVL-EVAL-2026-005"),
+        ]
+        for old_ec, new_ec in eval_code_migrations:
+            cur.execute(
+                "UPDATE OR IGNORE vendor_evaluations SET eval_code = ? WHERE eval_code = ?",
+                (new_ec, old_ec),
+            )
+        cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('db_seeded', '1')")
 
     conn.commit()
     conn.close()
