@@ -1,6 +1,5 @@
 import os
 import json
-import shutil
 import sqlite3
 import hashlib
 from datetime import datetime, timedelta
@@ -11,14 +10,8 @@ DEFAULT_REPO_DB = os.path.join(BASE_DIR, "iso_audit.db")
 DB_PATH = os.environ.get("ISO_DB_PATH", DEFAULT_REPO_DB)
 os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
 
-# If ISO_DB_PATH points to a volume path (e.g. /app/storage/iso_audit.db) that does not exist yet,
-# seed it from the repository's iso_audit.db so existing users and records are preserved.
-if os.path.abspath(DB_PATH) != os.path.abspath(DEFAULT_REPO_DB):
-    if not os.path.exists(DB_PATH) and os.path.exists(DEFAULT_REPO_DB):
-        try:
-            shutil.copy2(DEFAULT_REPO_DB, DB_PATH)
-        except Exception:
-            pass
+# Never seed the runtime database from a DB committed to the repository.
+# Deployment images may contain an outdated snapshot.
 
 
 def hash_password(password: str) -> str:

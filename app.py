@@ -5,6 +5,8 @@ import time
 import sqlite3
 import asyncio
 import threading
+import logging
+import uuid
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
@@ -24,6 +26,7 @@ os.makedirs(STORAGE_DIR, exist_ok=True)
 os.makedirs(STATIC_DIR, exist_ok=True)
 
 app = FastAPI(title="ISO Audit & Document Control System (Sunlogis)")
+logger = logging.getLogger("iso_audit.backup")
 
 
 def get_synology_client() -> SynologyClient:
@@ -140,6 +143,19 @@ def _get_code_seq_highwater(conn: sqlite3.Connection, key_prefix: str, code_pref
 
 
 def sync_users_state_to_storage(upload_async: bool = True):
+    """Serialize the complete snapshot + upload, including async requests."""
+    if upload_async:
+        threading.Thread(target=_sync_users_state_locked, daemon=True).start()
+    else:
+        _sync_users_state_locked()
+
+
+def _sync_users_state_locked():
+    with _sync_upload_lock:
+        _sync_users_state_to_storage()
+
+
+def _sync_users_state_to_storage():
     """
     Persist ALL system data (`users`, `deleted_users`, `settings`, `documents`, `document_revisions`,
     `employees`, `employee_files`, `training_records`, `equipment`, `pm_schedules`, `vendors`,
@@ -195,14 +211,13 @@ def sync_users_state_to_storage(upload_async: bool = True):
             settings_map = {r["key"]: r["value"] for r in settings_rows}
 
             # Create a safe online SQLite backup copy for uploading to Synology NAS
+            bck_conn = sqlite3.connect(db_backup_file)
             try:
-                bck_conn = sqlite3.connect(db_backup_file)
-                try:
-                    conn.backup(bck_conn)
-                finally:
-                    bck_conn.close()
-            except Exception:
-                pass
+                conn.backup(bck_conn)
+                if bck_conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    raise RuntimeError("Local SQLite backup failed integrity check")
+            finally:
+                bck_conn.close()
         finally:
             conn.close()
 
@@ -245,24 +260,27 @@ def sync_users_state_to_storage(upload_async: bool = True):
                 pass
 
         def _upload_state():
-            with _sync_upload_lock:
-                try:
-                    syno = get_synology_client()
-                    syno.upload_file(state_file, "System_DB", "users_state.json")
-                    if os.path.exists(db_backup_file):
-                        syno.upload_file(db_backup_file, "System_DB", "iso_audit.db")
-                except Exception:
-                    pass
+            syno = get_synology_client()
+            version = datetime.now().strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid.uuid4().hex[:8]
+            # Keep immutable recovery points before updating the latest copies.
+            uploads = [
+                (db_backup_file, "System_DB/History", f"iso_audit_{version}.db"),
+                (state_file, "System_DB/History", f"users_state_{version}.json"),
+                (db_backup_file, "System_DB", "iso_audit.db"),
+                (state_file, "System_DB", "users_state.json"),
+            ]
+            for source, folder, name in uploads:
+                result = syno.upload_file(source, folder, name)
+                if not isinstance(result, dict) or not result.get("synology_synced"):
+                    raise RuntimeError(f"Synology backup upload failed: {folder}/{name}")
+            logger.info("Synology database backup completed; version=%s", version)
 
-        if upload_async:
-            threading.Thread(target=_upload_state, daemon=True).start()
-        else:
-            _upload_state()
+        _upload_state()
     except Exception:
-        pass
+        logger.exception("Synology database backup failed; previous NAS copies may be intact")
 
 
-def restore_users_state_from_storage():
+def restore_users_state_from_storage(require_backup: bool = False):
     """
     On startup, compare user, settings, and all application tables across SQLite DB,
     local persistent files, and Synology NAS (/DATA/ISO/System_DB/users_state.json & /DATA/ISO/System_DB/iso_audit.db),
@@ -275,6 +293,9 @@ def restore_users_state_from_storage():
         os.makedirs(state_dir, exist_ok=True)
         remote_tmp_file = os.path.join(state_dir, "users_state_remote.json")
         remote_db_file = os.path.join(state_dir, "iso_audit_remote.db")
+        for stale_path in (remote_tmp_file, remote_db_file):
+            if os.path.exists(stale_path):
+                os.remove(stale_path)
 
         # Always try to fetch latest users_state.json and iso_audit.db from Synology NAS on startup
         try:
@@ -285,9 +306,11 @@ def restore_users_state_from_storage():
                 syno.download_file_to_local(f"{root_p}/System_DB/users_state.json", remote_tmp_file)
                 syno.download_file_to_local(f"{root_p}/System_DB/iso_audit.db", remote_db_file)
         except Exception:
-            pass
+            logger.exception("Cannot download Synology database backup")
 
-        candidate_files = [remote_tmp_file] + _get_user_state_paths()
+        # A newly created runtime DB must restore only from a verified NAS
+        # download, never from a file bundled in the deployment image.
+        candidate_files = [remote_tmp_file] if require_backup else [remote_tmp_file] + _get_user_state_paths()
         best_data = None
         best_updated_at = ""
         best_settings = None
@@ -330,6 +353,8 @@ def restore_users_state_from_storage():
                 rconn = sqlite3.connect(remote_db_file)
                 rconn.row_factory = sqlite3.Row
                 try:
+                    if rconn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                        raise RuntimeError("Synology SQLite backup failed integrity check")
                     r_settings = {r["key"]: r["value"] for r in rconn.execute("SELECT key, value FROM settings").fetchall()}
                     r_db_ts = str(r_settings.get("db_updated_at") or r_settings.get("settings_updated_at") or r_settings.get("users_updated_at") or "")
                     if best_tables is None or (r_db_ts and r_db_ts > best_tables_ts):
@@ -354,6 +379,18 @@ def restore_users_state_from_storage():
             except Exception:
                 pass
 
+        # On an ephemeral instance with no previous runtime DB, refuse to start
+        # without a complete, timestamped backup. Otherwise a freshly seeded DB
+        # could be served and uploaded over the real NAS backup.
+        if require_backup and (
+            not (os.path.exists(remote_tmp_file) or os.path.exists(remote_db_file))
+            or
+            not best_tables_ts
+            or not isinstance(best_tables, dict)
+            or not all(isinstance(best_tables.get(tbl), list) for tbl in ALL_SYNC_TABLES)
+        ):
+            raise RuntimeError("No valid complete database backup found; refusing to start with seed data")
+
         conn = get_db()
         try:
             conn.execute(
@@ -363,7 +400,7 @@ def restore_users_state_from_storage():
             if best_tables:
                 cur_db_ts_row = conn.execute("SELECT value FROM settings WHERE key = 'db_updated_at'").fetchone()
                 local_db_ts = (cur_db_ts_row["value"] if cur_db_ts_row and cur_db_ts_row["value"] else "")
-                if not local_db_ts or not best_tables_ts or best_tables_ts >= local_db_ts:
+                if best_tables_ts and (not local_db_ts or best_tables_ts > local_db_ts):
                     conn.execute("PRAGMA foreign_keys = OFF")
                     try:
                         for tbl in ALL_SYNC_TABLES:
@@ -507,10 +544,12 @@ def restore_users_state_from_storage():
         finally:
             conn.close()
 
-        # Sync the merged state back to local mirror files & Synology if tables weren't stored in JSON yet
-        sync_users_state_to_storage(upload_async=True)
+        # Do not upload during startup: a stale/incomplete local state must
+        # never overwrite the NAS backup. Normal data changes still trigger sync.
+        logger.info("Database restore check completed; backup_timestamp=%s", best_tables_ts or "none")
     except Exception:
-        pass
+        logger.exception("Database restore failed")
+        raise
 
 
 def bootstrap_sample_files_and_synology():
@@ -701,8 +740,9 @@ async def periodic_pm_alert_scheduler():
 
 @app.on_event("startup")
 async def on_startup():
+    db_existed = os.path.exists(DB_PATH) and os.path.getsize(DB_PATH) > 0
     init_db()
-    restore_users_state_from_storage()
+    restore_users_state_from_storage(require_backup=not db_existed)
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, bootstrap_sample_files_and_synology)
     asyncio.create_task(periodic_pm_alert_scheduler())

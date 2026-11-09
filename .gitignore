@@ -11,3 +11,5 @@ storage/ISO/System_DB/
 *.db-wal
 *.db-shm
 *.db-journal
+*.sqlite
+*.sqlite3
