@@ -32,6 +32,9 @@ class SynologyClient:
         self.username = username.strip()
         self.password = password
         self.base_folder = base_folder.strip().strip("/") or "ISO"
+        self.required_root_path = os.environ.get("SYNOLOGY_REQUIRED_ROOT", "").rstrip("/")
+        if self.required_root_path and self.required_root_path.rsplit("/", 1)[-1].lower() != self.base_folder.lower():
+            raise ValueError("SYNOLOGY_FOLDER does not match SYNOLOGY_REQUIRED_ROOT")
         self.custom_host = custom_host.strip().rstrip("/")
         self.local_storage_root = os.path.abspath(local_storage_root)
 
@@ -180,6 +183,8 @@ class SynologyClient:
             and SynologyClient._cached_working_url
             and SynologyClient._cached_sid
             and SynologyClient._cached_root_path
+            and SynologyClient._cached_root_path.rstrip("/").rsplit("/", 1)[-1].lower() == self.base_folder.lower()
+            and (not self.required_root_path or SynologyClient._cached_root_path.rstrip("/") == self.required_root_path)
         ):
             self.resolved_base_url = SynologyClient._cached_working_url
             self.sid = SynologyClient._cached_sid
@@ -242,6 +247,9 @@ class SynologyClient:
             root_ok, root_msg = self._resolve_or_create_iso_root()
             if not root_ok:
                 return False, root_msg
+            if self.required_root_path and self.resolved_root_path.rstrip("/") != self.required_root_path:
+                self.last_error = "Synology root does not match the required test folder"
+                return False, self.last_error
 
             SynologyClient._cached_working_url = self.resolved_base_url
             SynologyClient._cached_sid = self.sid

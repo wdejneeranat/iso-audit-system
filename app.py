@@ -35,7 +35,7 @@ def get_synology_client() -> SynologyClient:
         quickconnect_id=cfg.get("synology_quickconnect", "Sunlogis"),
         username=cfg.get("synology_user", "Watcharagorn"),
         password=cfg.get("synology_password", "Cervelo$3"),
-        base_folder=cfg.get("synology_folder", "ISO"),
+        base_folder=os.environ.get("SYNOLOGY_FOLDER") or cfg.get("synology_folder", "ISO"),
         custom_host=cfg.get("synology_custom_host", ""),
         local_storage_root=STORAGE_DIR,
     )
