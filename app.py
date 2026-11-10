@@ -83,6 +83,16 @@ def create_minimal_pdf(file_path: str, title_text: str, subtitle_text: str) -> N
         f.write(pdf_bytes)
 
 
+def is_generated_document_placeholder(file_path: str) -> bool:
+    """Recognize the old sample PDF so it is never shown as an uploaded document."""
+    try:
+        with open(file_path, "rb") as source:
+            header = source.read(8192)
+        return b"Effective ISO Controlled Document - " in header and b"Stored in Synology NAS: QuickConnect" in header
+    except OSError:
+        return False
+
+
 def _get_user_state_paths() -> List[str]:
     paths = [
         os.path.join(STORAGE_DIR, "ISO", "System_DB", "users_state.json"),
@@ -586,44 +596,9 @@ def bootstrap_sample_files_and_synology():
 
     syno = get_synology_client()
 
-    for d in docs:
-        if not d["file_name"] or not d["local_path"] or not os.path.exists(d["local_path"]):
-            fname = f"{d['doc_code']}.pdf"
-            local_p = os.path.join(STORAGE_DIR, "ISO", "Documents", fname)
-            create_minimal_pdf(
-                local_p,
-                f"Document Code: {d['doc_code']} (Rev.{d['revision_no']:02d})",
-                f"Effective ISO Controlled Document - {d['doc_code']}",
-            )
-            up_res = syno.upload_file(local_p, "Documents", fname)
-            c = get_db()
-            try:
-                c.execute(
-                    """
-                    UPDATE documents
-                    SET file_name = ?, original_name = ?, local_path = ?, synology_path = ?, synology_synced = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        fname,
-                        fname,
-                        up_res["local_path"],
-                        up_res["synology_path"],
-                        1 if up_res["synology_synced"] else 0,
-                        d["id"],
-                    ),
-                )
-                c.execute(
-                    """
-                    UPDATE document_revisions
-                    SET file_name = ?, local_path = ?, synology_path = ?
-                    WHERE doc_id = ? AND revision_no = ?
-                    """,
-                    (fname, up_res["local_path"], up_res["synology_path"], d["id"], d["revision_no"]),
-                )
-                c.commit()
-            finally:
-                c.close()
+    # Documents are user-owned files. Never generate sample PDFs or upload
+    # replacements when the Render container's ephemeral local copy is absent.
+    # The preview endpoint fetches the authoritative copy from Synology.
 
     for e in emps:
         if not e["application_file_name"] or not e["application_local_path"] or not os.path.exists(e["application_local_path"]):
@@ -1297,14 +1272,19 @@ def download_or_preview_document(
         raise HTTPException(status_code=403, detail="คุณไม่มีสิทธิ์เข้าถึงเอกสารนี้ตามข้อกำหนดการควบคุมเอกสาร")
 
     local_path = doc["local_path"]
-    if (not local_path or not os.path.exists(local_path)) and doc["synology_path"]:
-        fallback_local = os.path.join(STORAGE_DIR, "ISO", "Documents", doc["file_name"] or f"{doc['doc_code']}.pdf")
+    if doc["synology_path"]:
+        # Synology is authoritative; a local file may be a stale placeholder
+        # left behind by older deployments.
+        safe_filename = os.path.basename(doc["file_name"] or f"{doc['doc_code']}.pdf")
+        fallback_local = os.path.join(STORAGE_DIR, "ISO", "Documents", "PreviewCache", f"{doc_id}_{safe_filename}")
         syno = get_synology_client()
         if syno.download_file_to_local(doc["synology_path"], fallback_local):
             local_path = fallback_local
 
     if not local_path or not os.path.exists(local_path):
         raise HTTPException(status_code=404, detail="ยังไม่มีไฟล์แนบสำหรับเอกสารนี้")
+    if is_generated_document_placeholder(local_path):
+        raise HTTPException(status_code=409, detail="พบ PDF ตัวอย่างแทนไฟล์จริง กรุณาตรวจสอบไฟล์ต้นฉบับใน Synology Documents/Revisions")
 
     disposition = "attachment" if download else "inline"
     return FileResponse(
